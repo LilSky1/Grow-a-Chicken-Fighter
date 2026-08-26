@@ -43,6 +43,10 @@ local CONFIG = {
 	-- Event / Mob Tracking Configuration
 	autoTrackEventMob = false,
 	hoverHeight = 10,           -- Distance above NPC head
+
+	-- Anti-AFK Configuration
+	autoAntiAFK = true,
+	antiAFKInterval = 600,     -- 10 Minutes (600s)
 }
 
 local sessionId = 0
@@ -51,18 +55,33 @@ local currentGeneratorTarget = 1
 local eventTrackingConnection = nil
 
 ---------------------------------------------------------
--- 🛡️ SAFE ANTI-AFK (Native Physics Simulation)
+-- 🛡️ SAFE ANTI-AFK (Human-like Walk Simulation Every 10 Mins)
 ---------------------------------------------------------
 task.spawn(function()
 	while true do
-		task.wait(600)
-		pcall(function()
-			local char = LocalPlayer.Character
-			local hum = char and char:FindFirstChildOfClass("Humanoid")
-			if hum and hum.Health > 0 then
-				hum.Jump = true
-			end
-		end)
+		task.wait(CONFIG.antiAFKInterval or 600)
+		if CONFIG.autoAntiAFK then
+			pcall(function()
+				local char = LocalPlayer.Character
+				local hum = char and char:FindFirstChildOfClass("Humanoid")
+				local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+				if hum and hrp and hum.Health > 0 then
+					local startPos = hrp.Position
+					
+					-- 1. Walk forward 3 studs
+					hum:MoveTo(startPos + (hrp.CFrame.LookVector * 3))
+					task.wait(0.6)
+					
+					-- 2. Walk back to starting position
+					hum:MoveTo(startPos)
+					task.wait(0.6)
+					
+					-- 3. Stop movement
+					hum:Move(Vector3.zero)
+				end
+			end)
+		end
 	end
 end)
 
@@ -402,6 +421,7 @@ local Window = Library:CreateWindow({
 local Tabs = {
 	Main = Window:AddTab("Main", "user"),
 	Event = Window:AddTab("Event", "sparkles"),
+	AntiAFK = Window:AddTab("Anti AFK", "shield"),
 	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
 }
 
@@ -551,7 +571,61 @@ EventRightBox:AddButton({
 	Tooltip = "Instantly teleports above the current ChickenBody_npc in workspace.",
 })
 
--- TAB 3: UI Settings
+-- TAB 3: Anti AFK Controls
+local AntiAFKLeftBox = Tabs.AntiAFK:AddLeftGroupbox("Anti-AFK System")
+
+AntiAFKLeftBox:AddToggle("EnableAntiAFKToggle", {
+	Text = "Enable Anti-AFK",
+	Default = true,
+	Tooltip = "Simulates human walking forward 3 studs & back every 10 minutes to prevent Roblox 20-min AFK disconnects.",
+	Callback = function(Value)
+		CONFIG.autoAntiAFK = Value
+		if Value then
+			Library:Notify("Anti-AFK Walk Enabled", 2)
+		else
+			Library:Notify("Anti-AFK Walk Disabled", 2)
+		end
+	end,
+})
+
+AntiAFKLeftBox:AddSlider("AntiAFKIntervalSlider", {
+	Text = "Anti-AFK Interval (Minutes)",
+	Default = 10,
+	Min = 1,
+	Max = 15,
+	Rounding = 0,
+	Compact = false,
+	Tooltip = "Frequency of walking simulation in minutes.",
+	Callback = function(Value)
+		CONFIG.antiAFKInterval = math.floor(Value) * 60
+	end,
+})
+
+local AntiAFKRightBox = Tabs.AntiAFK:AddRightGroupbox("Manual Testing")
+
+AntiAFKRightBox:AddButton({
+	Text = "🚶 Walk Simulation Test",
+	Func = function()
+		pcall(function()
+			local char = LocalPlayer.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+			if hum and hrp and hum.Health > 0 then
+				local startPos = hrp.Position
+				hum:MoveTo(startPos + (hrp.CFrame.LookVector * 3))
+				task.wait(0.6)
+				hum:MoveTo(startPos)
+				task.wait(0.6)
+				hum:Move(Vector3.zero)
+				Library:Notify("Anti-AFK walk simulation executed", 2)
+			end
+		end)
+	end,
+	Tooltip = "Triggers the 3-stud walk forward & back test immediately.",
+})
+
+-- TAB 4: UI Settings
 local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu Configuration")
 
 MenuGroup:AddToggle("KeybindMenuOpen", {

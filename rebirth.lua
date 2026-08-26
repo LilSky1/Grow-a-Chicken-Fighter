@@ -329,9 +329,8 @@ end
 -- OBSIDIAN UI SETUP
 ---------------------------------------------------------
 local Window = Library:CreateWindow({
-	Title = "Chicken Auto Hub",
+	Title = "Chicken By Lilsky1",
 	Footer = "version: 1.0.0",
-	Icon = 95816097006870,
 	NotifySide = "Right",
 	ShowCustomCursor = true,
 })

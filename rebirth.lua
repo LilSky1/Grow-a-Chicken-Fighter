@@ -1,6 +1,7 @@
 --!nocheck
 --[[
-  Auto Farm, Progressive Upgrade, Step-by-Step Expand Coop, Smart Tower, Incubator, Rebirth & Anti-AFK
+  Auto Farm, Progressive Upgrade, Step-by-Step Expand Coop, Smart Tower & Rebirth
+  (Dynamic Expand Coop per Generator Edition)
 ]]
 
 -- ปิดการทำงานของสคริปต์เก่า
@@ -16,7 +17,6 @@ local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
-local VirtualUser = game:GetService("VirtualUser")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RemotesFolder = ReplicatedStorage:WaitForChild("Remotes", 5)
 
@@ -24,8 +24,8 @@ local CONFIG = {
 	enabled = true,
 	autoUpgrade = true,
 	autoClaimIncubator = true,
-	maxGenerators = 6,
-	upgradeInterval = 0.1,
+	maxGenerators = 6,          -- ปรับใน UI ได้ 1 ถึง 6 เครื่อง
+	upgradeInterval = 0.10,     -- จังหวะอัปเกรดเร็ว Turbo
 	towerRestartInterval = 16,
 	rebirthCheckInterval = 5,
 	incubatorInterval = 180,
@@ -36,17 +36,6 @@ local CONFIG = {
 local sessionId = 0
 local isLoopRunning = false
 local currentGeneratorTarget = 1
-
----------------------------------------------------------
--- ANTI-AFK ENGINE (ป้องกันการโดนเตะ 20 นาที 100%)
----------------------------------------------------------
-if not _G.__AntiAFKConnected then
-	_G.__AntiAFKConnected = true
-	LocalPlayer.Idled:Connect(function()
-		VirtualUser:CaptureController()
-		VirtualUser:ClickButton2(Vector2.new())
-	end)
-end
 
 local function smartWait(duration, currentSession)
 	local start = tick()
@@ -114,7 +103,7 @@ local function safeInvoke(remoteName, ...)
 	return false, nil
 end
 
--- ระบบซื้อ, ขยายเล้าไก่ และอัปเกรด Feeder อัตโนมัติ
+-- ระบบซื้อ, ขยายเล้าไก่ และอัปเกรด Feeder อัตโนมัติแบบทีละ 1 ลำดับ
 local function tryBuyAndUpgradeGenerators()
 	if not CONFIG.enabled or _G.__AutoFarmRebirthStop then return end
 
@@ -122,23 +111,30 @@ local function tryBuyAndUpgradeGenerators()
 		currentGeneratorTarget = CONFIG.maxGenerators
 	end
 
+	-- 1. ถ้าเป้าหมายคือเครื่องที่ 3 ขึ้นไป ให้ยิงขยายเล้าไก่ (ExpandCoop) เผื่อไว้เสมอ
 	if currentGeneratorTarget >= 3 then
 		safeInvoke("ExpandCoop")
 	end
 
+	-- 2. ยิงซื้อเปิดช่องเครื่องเป้าหมายปัจจุบัน
 	if validRemotes["BuyGenerator"] then
 		safeInvoke("BuyGenerator", currentGeneratorTarget)
 	elseif validRemotes["PurchaseGenerator"] then
 		safeInvoke("PurchaseGenerator", currentGeneratorTarget)
 	end
 
+	-- 3. Turbo Upgrade: ยิงอัปเกรดเครื่องปัจจุบันรัวๆ
 	for _ = 1, 3 do
 		local ok, res = safeInvoke("UpgradeGenerator", currentGeneratorTarget)
 
+		-- ตรวจสอบว่าเครื่องนี้อัปเกรดจนเต็ม (Max Level) หรือยัง
 		if ok and type(res) == "table" then
 			if res.error and (string.find(tostring(res.error):lower(), "max") or string.find(tostring(res.error):lower(), "full")) then
+				-- ถ้ายังไม่ถึงขีดจำกัดที่ตั้งไว้ใน UI ให้ขยับเป้าหมายไปเครื่องถัดไป
 				if currentGeneratorTarget < CONFIG.maxGenerators then
 					currentGeneratorTarget = currentGeneratorTarget + 1
+					
+					-- 🌟 ถ้าจะเริ่มทำเครื่องที่ 3 เป็นต้นไป ให้สั่งขยายเล้าไก่ทันที
 					if currentGeneratorTarget >= 3 then
 						safeInvoke("ExpandCoop")
 					end
@@ -285,6 +281,7 @@ local function startLoops()
 					safeInvoke("ClaimRebirthMilestones")
 				end
 
+				-- รีเซ็ตเป้าหมายกลับไปเริ่มที่เครื่อง 1 เสมอ
 				currentGeneratorTarget = 1
 
 				task.wait(1.0)
@@ -340,10 +337,10 @@ local Title = Instance.new("TextLabel", MainFrame)
 Title.Size = UDim2.new(1, -20, 0, 35)
 Title.Position = UDim2.new(0, 10, 0, 5)
 Title.BackgroundTransparency = 1
-Title.Text = "🐔 Chicken Auto Hub (Anti-AFK)"
+Title.Text = "🐔 Chicken Auto Hub (Max 6)"
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.Font = Enum.Font.GothamBold
-Title.TextSize = 14
+Title.TextSize = 15
 Title.TextXAlignment = Enum.TextXAlignment.Left
 
 local Container = Instance.new("Frame", MainFrame)
@@ -412,7 +409,7 @@ incBtn = createButton("🥚 Auto Claim Incubator: เปิด", Color3.fromRGB(
 	end
 end)
 
--- 4. ส่วนควบคุมจำนวนเครื่องให้อาหาร (1 ถึง 6 เครื่อง)
+-- 4. ควบคุมจำนวนเครื่องให้อาหาร (1 - 6 เครื่อง)
 local genSelectorFrame = Instance.new("Frame", Container)
 genSelectorFrame.Size = UDim2.new(1, 0, 0, 36)
 genSelectorFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 42)

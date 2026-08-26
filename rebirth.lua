@@ -1,10 +1,10 @@
 --!nocheck
 --[[
-  Auto Farm, Progressive Upgrade, Step-by-Step Expand Coop, Smart Tower & Rebirth
-  (Dynamic Expand Coop per Generator Edition)
+  Chicken Auto Hub - Obsidian / LinoriaLib UI
+  (Full English Edition: Automation, Target Maxing, Expand Coop, Smart Tower, Incubator & Safe Anti-AFK)
 ]]
 
--- ปิดการทำงานของสคริปต์เก่า
+-- Terminate previous script instances
 if _G.__AutoFarmRebirthRunning then
 	_G.__AutoFarmRebirthStop = true
 	_G.__AutoFarmRebirthRunning = false
@@ -15,20 +15,27 @@ _G.__AutoFarmRebirthStop = false
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
-local CoreGui = game:GetService("CoreGui")
-local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RemotesFolder = ReplicatedStorage:WaitForChild("Remotes", 5)
+
+-- Load Obsidian UI Library & Addons
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+local Options = Library.Options
+local Toggles = Library.Toggles
 
 local CONFIG = {
 	enabled = true,
 	autoUpgrade = true,
 	autoClaimIncubator = true,
-	maxGenerators = 6,          -- ปรับใน UI ได้ 1 ถึง 6 เครื่อง
-	upgradeInterval = 0.10,     -- จังหวะอัปเกรดเร็ว Turbo
+	maxGenerators = 6,          -- Configurable from 1 to 6
+	upgradeInterval = 0.10,     -- Turbo Delay (0.10s)
 	towerRestartInterval = 16,
 	rebirthCheckInterval = 5,
-	incubatorInterval = 180,
+	incubatorInterval = 180,    -- 3 Minutes
 	cooldownBeforeTower = 6,
 	cooldownAfterRebirth = 8,
 }
@@ -36,6 +43,22 @@ local CONFIG = {
 local sessionId = 0
 local isLoopRunning = false
 local currentGeneratorTarget = 1
+
+---------------------------------------------------------
+-- 🛡️ SAFE ANTI-AFK (Native Physics Simulation)
+---------------------------------------------------------
+task.spawn(function()
+	while true do
+		task.wait(600)
+		pcall(function()
+			local char = LocalPlayer.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if hum and hum.Health > 0 then
+				hum.Jump = true
+			end
+		end)
+	end
+end)
 
 local function smartWait(duration, currentSession)
 	local start = tick()
@@ -49,10 +72,9 @@ local function smartWait(duration, currentSession)
 end
 
 ---------------------------------------------------------
--- ONE-TIME REMOTE INITIALIZATION
+-- REMOTE INITIALIZATION & CACHING
 ---------------------------------------------------------
 local validRemotes = {}
-
 local function initRemotesOnce()
 	if RemotesFolder then
 		for _, r in ipairs(RemotesFolder:GetChildren()) do
@@ -70,7 +92,6 @@ local function initRemotesOnce()
 		end
 	end
 end
-
 initRemotesOnce()
 
 local okReq, CoreRemotes = pcall(function()
@@ -80,7 +101,7 @@ end)
 local function safeInvoke(remoteName, ...)
 	if not CONFIG.enabled or _G.__AutoFarmRebirthStop then return false end
 	
-	local remote = validRemotes[remoteName]
+	local remote = validRemotes[remoteName] or (RemotesFolder and RemotesFolder:FindFirstChild(remoteName))
 	if remote then
 		local ok, res = pcall(function(...)
 			if remote:IsA("RemoteFunction") then
@@ -103,7 +124,7 @@ local function safeInvoke(remoteName, ...)
 	return false, nil
 end
 
--- ระบบซื้อ, ขยายเล้าไก่ และอัปเกรด Feeder อัตโนมัติแบบทีละ 1 ลำดับ
+-- Progressive Generator Upgrade & Step-by-Step Coop Expansion
 local function tryBuyAndUpgradeGenerators()
 	if not CONFIG.enabled or _G.__AutoFarmRebirthStop then return end
 
@@ -111,38 +132,40 @@ local function tryBuyAndUpgradeGenerators()
 		currentGeneratorTarget = CONFIG.maxGenerators
 	end
 
-	-- 1. ถ้าเป้าหมายคือเครื่องที่ 3 ขึ้นไป ให้ยิงขยายเล้าไก่ (ExpandCoop) เผื่อไว้เสมอ
+	-- Expand Coop before buying slots 3 and above
 	if currentGeneratorTarget >= 3 then
 		safeInvoke("ExpandCoop")
 	end
 
-	-- 2. ยิงซื้อเปิดช่องเครื่องเป้าหมายปัจจุบัน
+	-- Unlock / Buy generator slot
 	if validRemotes["BuyGenerator"] then
 		safeInvoke("BuyGenerator", currentGeneratorTarget)
 	elseif validRemotes["PurchaseGenerator"] then
 		safeInvoke("PurchaseGenerator", currentGeneratorTarget)
 	end
 
-	-- 3. Turbo Upgrade: ยิงอัปเกรดเครื่องปัจจุบันรัวๆ
+	-- Turbo Upgrade current target generator
 	for _ = 1, 3 do
 		local ok, res = safeInvoke("UpgradeGenerator", currentGeneratorTarget)
 
-		-- ตรวจสอบว่าเครื่องนี้อัปเกรดจนเต็ม (Max Level) หรือยัง
-		if ok and type(res) == "table" then
-			if res.error and (string.find(tostring(res.error):lower(), "max") or string.find(tostring(res.error):lower(), "full")) then
-				-- ถ้ายังไม่ถึงขีดจำกัดที่ตั้งไว้ใน UI ให้ขยับเป้าหมายไปเครื่องถัดไป
-				if currentGeneratorTarget < CONFIG.maxGenerators then
-					currentGeneratorTarget = currentGeneratorTarget + 1
-					
-					-- 🌟 ถ้าจะเริ่มทำเครื่องที่ 3 เป็นต้นไป ให้สั่งขยายเล้าไก่ทันที
-					if currentGeneratorTarget >= 3 then
-						safeInvoke("ExpandCoop")
-					end
-				end
-				break
+		local isMax = false
+		if ok and type(res) == "table" and res.error then
+			local err = tostring(res.error):lower()
+			if string.find(err, "max") or string.find(err, "full") or string.find(err, "limit") then
+				isMax = true
 			end
 		end
-		task.wait(0.04)
+
+		if isMax then
+			if currentGeneratorTarget < CONFIG.maxGenerators then
+				currentGeneratorTarget = currentGeneratorTarget + 1
+				if currentGeneratorTarget >= 3 then
+					safeInvoke("ExpandCoop")
+				end
+			end
+			break
+		end
+		task.wait(0.03)
 	end
 end
 
@@ -235,7 +258,7 @@ local function startLoops()
 		startTower(false, currentSession)
 	end)
 
-	-- 1. Loop Auto Buy/Upgrade Feeder & Step-by-Step Expand Coop
+	-- 1. Loop Auto Buy/Upgrade Feeder
 	task.spawn(function()
 		while CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession do
 			if CONFIG.autoUpgrade then
@@ -266,7 +289,7 @@ local function startLoops()
 		end
 	end)
 
-	-- 4. Loop Rebirth
+	-- 4. Loop Auto Rebirth
 	task.spawn(function()
 		while CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession do
 			local ok, _ = tryRebirth()
@@ -281,7 +304,7 @@ local function startLoops()
 					safeInvoke("ClaimRebirthMilestones")
 				end
 
-				-- รีเซ็ตเป้าหมายกลับไปเริ่มที่เครื่อง 1 เสมอ
+				-- Reset target generator to slot 1 after rebirth
 				currentGeneratorTarget = 1
 
 				task.wait(1.0)
@@ -303,184 +326,175 @@ local function startLoops()
 end
 
 ---------------------------------------------------------
--- NATIVE UI
+-- OBSIDIAN UI SETUP
 ---------------------------------------------------------
-local parentGui = (gethui and gethui()) or CoreGui:FindFirstChild("RobloxGui") or LocalPlayer:WaitForChild("PlayerGui")
+local Window = Library:CreateWindow({
+	Title = "Chicken Auto Hub",
+	Footer = "version: 1.0.0",
+	Icon = 95816097006870,
+	NotifySide = "Right",
+	ShowCustomCursor = true,
+})
 
-if parentGui:FindFirstChild("ChickenFarmHubUI") then
-	parentGui.ChickenFarmHubUI:Destroy()
-end
+local Tabs = {
+	Main = Window:AddTab("Main", "user"),
+	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+}
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "ChickenFarmHubUI"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = parentGui
+-- Left Column: Automation Controls
+local LeftGroupBox = Tabs.Main:AddLeftGroupbox("Automation Controls")
 
-local MainFrame = Instance.new("Frame")
-MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 270, 0, 430)
-MainFrame.Position = UDim2.new(0.05, 0, 0.2, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-MainFrame.BorderSizePixel = 0
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Parent = ScreenGui
+LeftGroupBox:AddToggle("MasterAutoFarm", {
+	Text = "Enable Auto Farm & Rebirth",
+	Default = true,
+	Tooltip = "Master switch for all automated farming, tower climbs, and rebirths.",
+	Callback = function(Value)
+		if Value then
+			startLoops()
+			Library:Notify("Auto Farm & Rebirth Enabled", 3)
+		else
+			stopAll()
+			Library:Notify("Auto Farm & Rebirth Disabled", 3)
+		end
+	end,
+})
 
-local UICorner = Instance.new("UICorner", MainFrame)
-UICorner.CornerRadius = UDim.new(0, 10)
+LeftGroupBox:AddToggle("AutoFeeder", {
+	Text = "Auto Feeder (Max 1-by-1 & Expand)",
+	Default = true,
+	Tooltip = "Upgrades feeder slots sequentially to max level and auto expands coop.",
+	Callback = function(Value)
+		CONFIG.autoUpgrade = Value
+	end,
+})
 
-local UIStroke = Instance.new("UIStroke", MainFrame)
-UIStroke.Color = Color3.fromRGB(60, 60, 75)
-UIStroke.Thickness = 1.5
+LeftGroupBox:AddToggle("AutoIncubator", {
+	Text = "Auto Claim Incubator (Every 3 Min)",
+	Default = true,
+	Tooltip = "Automatically claims finished eggs from the incubator every 3 minutes.",
+	Callback = function(Value)
+		CONFIG.autoClaimIncubator = Value
+	end,
+})
 
-local Title = Instance.new("TextLabel", MainFrame)
-Title.Size = UDim2.new(1, -20, 0, 35)
-Title.Position = UDim2.new(0, 10, 0, 5)
-Title.BackgroundTransparency = 1
-Title.Text = "🐔 Chicken Auto Hub (Max 6)"
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.Font = Enum.Font.GothamBold
-Title.TextSize = 15
-Title.TextXAlignment = Enum.TextXAlignment.Left
+LeftGroupBox:AddDivider()
 
-local Container = Instance.new("Frame", MainFrame)
-Container.Size = UDim2.new(1, -20, 1, -45)
-Container.Position = UDim2.new(0, 10, 0, 40)
-Container.BackgroundTransparency = 1
+LeftGroupBox:AddSlider("MaxGenSlider", {
+	Text = "Max Feeder Generators",
+	Default = 6,
+	Min = 1,
+	Max = 6,
+	Rounding = 0,
+	Compact = false,
+	Tooltip = "Set the maximum generator count to purchase and upgrade.",
+	Callback = function(Value)
+		CONFIG.maxGenerators = math.floor(Value)
+	end,
+})
 
-local UIList = Instance.new("UIListLayout", Container)
-UIList.Padding = UDim.new(0, 7)
-UIList.SortOrder = Enum.SortOrder.LayoutOrder
+-- Right Column: Manual Actions & Script Termination
+local RightGroupBox = Tabs.Main:AddRightGroupbox("Manual & System Controls")
 
-local function createButton(text, bgColor, callback)
-	local btn = Instance.new("TextButton", Container)
-	btn.Size = UDim2.new(1, 0, 0, 34)
-	btn.BackgroundColor3 = bgColor
-	btn.Text = text
-	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	btn.Font = Enum.Font.GothamSemibold
-	btn.TextSize = 13
-	btn.BorderSizePixel = 0
+RightGroupBox:AddButton({
+	Text = "🚀 Send Chicken to Tower",
+	Func = function()
+		startTower(true, sessionId)
+		Library:Notify("Chicken dispatched to Tower", 2)
+	end,
+	Tooltip = "Instantly sends chicken to highest available Tower floor.",
+})
 
-	local corner = Instance.new("UICorner", btn)
-	corner.CornerRadius = UDim.new(0, 6)
+RightGroupBox:AddButton({
+	Text = "🥚 Claim Incubator Now",
+	Func = function()
+		safeInvoke("IncubatorClaim")
+		Library:Notify("Incubator Claim invoked", 2)
+	end,
+	Tooltip = "Manually triggers incubator reward collection.",
+})
 
-	btn.MouseButton1Click:Connect(callback)
-	return btn
-end
+RightGroupBox:AddButton({
+	Text = "🔄 Attempt Rebirth Now",
+	Func = function()
+		local ok, res = tryRebirth()
+		if ok then
+			Library:Notify("🎉 Rebirth Successful!", 3)
+		else
+			Library:Notify("❌ Rebirth Failed: " .. tostring(res), 3)
+		end
+	end,
+	Tooltip = "Attempts to trigger Rebirth immediately.",
+})
 
--- 1. Toggle Auto Farm
-local toggleBtn
-toggleBtn = createButton("🟢 ระบบ Auto Farm: เปิดอยู่", Color3.fromRGB(45, 140, 70), function()
-	if CONFIG.enabled then
+RightGroupBox:AddDivider()
+
+RightGroupBox:AddButton({
+	Text = "❌ Kill Script & Destroy UI",
+	Func = function()
 		stopAll()
-		toggleBtn.Text = "🔴 ระบบ Auto Farm: ปิดอยู่"
-		toggleBtn.BackgroundColor3 = Color3.fromRGB(160, 50, 50)
-	else
-		startLoops()
-		toggleBtn.Text = "🟢 ระบบ Auto Farm: เปิดอยู่"
-		toggleBtn.BackgroundColor3 = Color3.fromRGB(45, 140, 70)
-	end
-end)
+		Library:Unload()
+	end,
+	Tooltip = "Completely halts automation threads and destroys the UI screen.",
+	Risky = true,
+})
 
--- 2. Toggle Auto Feeder
-local feedBtn
-feedBtn = createButton("🌽 Auto Feeder (ดันทีละเครื่อง): เปิด", Color3.fromRGB(50, 100, 160), function()
-	CONFIG.autoUpgrade = not CONFIG.autoUpgrade
-	if CONFIG.autoUpgrade then
-		feedBtn.Text = "🌽 Auto Feeder (ดันทีละเครื่อง): เปิด"
-		feedBtn.BackgroundColor3 = Color3.fromRGB(50, 100, 160)
-	else
-		feedBtn.Text = "🌽 Auto Feeder (ดันทีละเครื่อง): ปิด"
-		feedBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 100)
-	end
-end)
+-- UI Settings Tab
+local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu Configuration")
 
--- 3. Toggle Auto Claim Incubator
-local incBtn
-incBtn = createButton("🥚 Auto Claim Incubator: เปิด", Color3.fromRGB(90, 60, 140), function()
-	CONFIG.autoClaimIncubator = not CONFIG.autoClaimIncubator
-	if CONFIG.autoClaimIncubator then
-		incBtn.Text = "🥚 Auto Claim Incubator: เปิด"
-		incBtn.BackgroundColor3 = Color3.fromRGB(90, 60, 140)
-	else
-		incBtn.Text = "🥚 Auto Claim Incubator: ปิด"
-		incBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 100)
-	end
-end)
+MenuGroup:AddToggle("KeybindMenuOpen", {
+	Default = Library.KeybindFrame.Visible,
+	Text = "Open Keybind Menu",
+	Callback = function(value)
+		Library.KeybindFrame.Visible = value
+	end,
+})
 
--- 4. ควบคุมจำนวนเครื่องให้อาหาร (1 - 6 เครื่อง)
-local genSelectorFrame = Instance.new("Frame", Container)
-genSelectorFrame.Size = UDim2.new(1, 0, 0, 36)
-genSelectorFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
-genSelectorFrame.BorderSizePixel = 0
-Instance.new("UICorner", genSelectorFrame).CornerRadius = UDim.new(0, 6)
+MenuGroup:AddToggle("ShowCustomCursor", {
+	Text = "Custom Cursor",
+	Default = true,
+	Callback = function(Value)
+		Library.ShowCustomCursor = Value
+	end,
+})
 
-local minusBtn = Instance.new("TextButton", genSelectorFrame)
-minusBtn.Size = UDim2.new(0, 35, 1, 0)
-minusBtn.Position = UDim2.new(0, 0, 0, 0)
-minusBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
-minusBtn.Text = "➖"
-minusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-minusBtn.Font = Enum.Font.GothamBold
-minusBtn.TextSize = 14
-Instance.new("UICorner", minusBtn).CornerRadius = UDim.new(0, 6)
+MenuGroup:AddDropdown("NotificationSide", {
+	Values = { "Left", "Right" },
+	Default = "Right",
+	Text = "Notification Side",
+	Callback = function(Value)
+		Library:SetNotifySide(Value)
+	end,
+})
 
-local countLabel = Instance.new("TextLabel", genSelectorFrame)
-countLabel.Size = UDim2.new(1, -70, 1, 0)
-countLabel.Position = UDim2.new(0, 35, 0, 0)
-countLabel.BackgroundTransparency = 1
-countLabel.Text = "ซื้อ/อัปเกรด: " .. CONFIG.maxGenerators .. " เครื่อง"
-countLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
-countLabel.Font = Enum.Font.GothamBold
-countLabel.TextSize = 12
+MenuGroup:AddDivider()
 
-local plusBtn = Instance.new("TextButton", genSelectorFrame)
-plusBtn.Size = UDim2.new(0, 35, 1, 0)
-plusBtn.Position = UDim2.new(1, -35, 0, 0)
-plusBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
-plusBtn.Text = "➕"
-plusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-plusBtn.Font = Enum.Font.GothamBold
-plusBtn.TextSize = 14
-Instance.new("UICorner", plusBtn).CornerRadius = UDim.new(0, 6)
+MenuGroup:AddLabel("Menu Keybind"):AddKeyPicker("MenuKeybind", {
+	Default = "RightControl",
+	NoUI = true,
+	Text = "Menu Keybind"
+})
 
-minusBtn.MouseButton1Click:Connect(function()
-	if CONFIG.maxGenerators > 1 then
-		CONFIG.maxGenerators = CONFIG.maxGenerators - 1
-		countLabel.Text = "ซื้อ/อัปเกรด: " .. CONFIG.maxGenerators .. " เครื่อง"
-	end
-end)
-
-plusBtn.MouseButton1Click:Connect(function()
-	if CONFIG.maxGenerators < 6 then
-		CONFIG.maxGenerators = CONFIG.maxGenerators + 1
-		countLabel.Text = "ซื้อ/อัปเกรด: " .. CONFIG.maxGenerators .. " เครื่อง"
-	end
-end)
-
--- 5. ปุ่ม Action
-createButton("🥚 เก็บไข่ตู้ฟักทันที (Claim)", Color3.fromRGB(70, 60, 110), function()
-	safeInvoke("IncubatorClaim")
-end)
-
-createButton("🚀 ส่งไก่ไป Tower ทันที", Color3.fromRGB(55, 55, 65), function()
-	startTower(true, sessionId)
-end)
-
-createButton("🔄 ลอง Rebirth ทันที", Color3.fromRGB(55, 55, 65), function()
-	tryRebirth()
-end)
-
-createButton("❌ ปิดสคริปต์ & ลบ UI", Color3.fromRGB(180, 45, 45), function()
+MenuGroup:AddButton("Unload UI", function()
 	stopAll()
-	ScreenGui:Destroy()
+	Library:Unload()
 end)
 
-UserInputService.InputBegan:Connect(function(input, processed)
-	if not processed and input.KeyCode == Enum.KeyCode.RightShift then
-		MainFrame.Visible = not MainFrame.Visible
-	end
-end)
+Library.ToggleKeybind = Options.MenuKeybind
 
+-- Theme & Config Managers
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+
+ThemeManager:SetFolder("ChickenHub")
+SaveManager:SetFolder("ChickenHub/specific-game")
+
+SaveManager:BuildConfigSection(Tabs["UI Settings"])
+ThemeManager:ApplyToTab(Tabs["UI Settings"])
+
+SaveManager:LoadAutoloadConfig()
+
+-- Start Automation
 startLoops()

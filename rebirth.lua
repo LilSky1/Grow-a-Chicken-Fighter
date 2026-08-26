@@ -1,7 +1,7 @@
 --!nocheck
 --[[
   Chicken Auto Hub - Obsidian / LinoriaLib UI
-  (Full English Edition: Automation, Target Maxing, Expand Coop, Smart Tower, Incubator & Safe Anti-AFK)
+  (Full English Edition: Automation, Event Mob Tracking & Hover, Target Maxing, Expand Coop, Smart Tower & Incubator)
 ]]
 
 -- Terminate previous script instances
@@ -15,6 +15,7 @@ _G.__AutoFarmRebirthStop = false
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
+local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RemotesFolder = ReplicatedStorage:WaitForChild("Remotes", 5)
 
@@ -38,11 +39,16 @@ local CONFIG = {
 	incubatorInterval = 180,    -- 3 Minutes
 	cooldownBeforeTower = 6,
 	cooldownAfterRebirth = 8,
+
+	-- Event / Mob Tracking Configuration
+	autoTrackEventMob = false,
+	hoverHeight = 10,           -- Distance above NPC head
 }
 
 local sessionId = 0
 local isLoopRunning = false
 local currentGeneratorTarget = 1
+local eventTrackingConnection = nil
 
 ---------------------------------------------------------
 -- 🛡️ SAFE ANTI-AFK (Native Physics Simulation)
@@ -132,26 +138,28 @@ local function tryBuyAndUpgradeGenerators()
 		currentGeneratorTarget = CONFIG.maxGenerators
 	end
 
-	-- Expand Coop before buying slots 3 and above
+	-- 1. If target is generator 3 or higher, expand coop first
 	if currentGeneratorTarget >= 3 then
 		safeInvoke("ExpandCoop")
 	end
 
-	-- Unlock / Buy generator slot
+	-- 2. Unlock / Buy current generator slot
 	if validRemotes["BuyGenerator"] then
 		safeInvoke("BuyGenerator", currentGeneratorTarget)
 	elseif validRemotes["PurchaseGenerator"] then
 		safeInvoke("PurchaseGenerator", currentGeneratorTarget)
+	else
+		safeInvoke("BuyGenerator", currentGeneratorTarget)
 	end
 
-	-- Turbo Upgrade current target generator
+	-- 3. Turbo Upgrade current target generator
 	for _ = 1, 3 do
 		local ok, res = safeInvoke("UpgradeGenerator", currentGeneratorTarget)
 
 		local isMax = false
 		if ok and type(res) == "table" and res.error then
 			local err = tostring(res.error):lower()
-			if string.find(err, "max") or string.find(err, "full") or string.find(err, "limit") then
+			if (string.find(err, "max") or string.find(err, "full")) and not string.find(err, "coop") and not string.find(err, "money") and not string.find(err, "cash") and not string.find(err, "afford") then
 				isMax = true
 			end
 		end
@@ -165,7 +173,7 @@ local function tryBuyAndUpgradeGenerators()
 			end
 			break
 		end
-		task.wait(0.03)
+		task.wait(0.04)
 	end
 end
 
@@ -231,12 +239,69 @@ local function tryRebirth()
 	return false, tostring(result)
 end
 
+---------------------------------------------------------
+-- 🐔 DYNAMIC EVENT MOB SEARCH & TRACKING LOGIC
+---------------------------------------------------------
+local function getTargetChickenMob()
+	local folder = workspace:FindFirstChild("ChickenBodies")
+	if folder then
+		for _, npc in ipairs(folder:GetChildren()) do
+			-- Finds any NPC starting with "ChickenBody_npc" regardless of the trailing ID number
+			if npc.Name:find("ChickenBody_npc") then
+				local root = npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChild("Head") or npc:FindFirstChildWhichIsA("BasePart")
+				if root then
+					return npc, root
+				end
+			end
+		end
+	end
+	return nil, nil
+end
+
+local function updateEventTrackingState(enable)
+	if eventTrackingConnection then
+		eventTrackingConnection:Disconnect()
+		eventTrackingConnection = nil
+	end
+
+	if not enable then return end
+
+	eventTrackingConnection = RunService.Heartbeat:Connect(function()
+		if not CONFIG.autoTrackEventMob or not CONFIG.enabled or _G.__AutoFarmRebirthStop then
+			if eventTrackingConnection then
+				eventTrackingConnection:Disconnect()
+				eventTrackingConnection = nil
+			end
+			return
+		end
+
+		local char = LocalPlayer.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+		if hrp and hum and hum.Health > 0 then
+			local _, targetRoot = getTargetChickenMob()
+			if targetRoot then
+				-- Hover smoothly above target NPC
+				hrp.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, CONFIG.hoverHeight, 0))
+				hrp.AssemblyLinearVelocity = Vector3.zero
+			end
+		end
+	end)
+end
+
 local function stopAll()
 	CONFIG.enabled = false
+	CONFIG.autoTrackEventMob = false
 	_G.__AutoFarmRebirthStop = true
 	_G.__AutoFarmRebirthRunning = false
 	isLoopRunning = false
 	sessionId = sessionId + 1
+
+	if eventTrackingConnection then
+		eventTrackingConnection:Disconnect()
+		eventTrackingConnection = nil
+	end
 end
 
 local function startLoops()
@@ -304,7 +369,6 @@ local function startLoops()
 					safeInvoke("ClaimRebirthMilestones")
 				end
 
-				-- Reset target generator to slot 1 after rebirth
 				currentGeneratorTarget = 1
 
 				task.wait(1.0)
@@ -337,10 +401,11 @@ local Window = Library:CreateWindow({
 
 local Tabs = {
 	Main = Window:AddTab("Main", "user"),
+	Event = Window:AddTab("Event", "sparkles"),
 	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
 }
 
--- Left Column: Automation Controls
+-- TAB 1: Main Automation & Manual Controls
 local LeftGroupBox = Tabs.Main:AddLeftGroupbox("Automation Controls")
 
 LeftGroupBox:AddToggle("MasterAutoFarm", {
@@ -359,7 +424,7 @@ LeftGroupBox:AddToggle("MasterAutoFarm", {
 })
 
 LeftGroupBox:AddToggle("AutoFeeder", {
-	Text = "Auto Feeder (Max 1-by-1 & Expand)",
+	Text = "Auto Feeder (Max & Expand)",
 	Default = true,
 	Tooltip = "Upgrades feeder slots sequentially to max level and auto expands coop.",
 	Callback = function(Value)
@@ -368,9 +433,9 @@ LeftGroupBox:AddToggle("AutoFeeder", {
 })
 
 LeftGroupBox:AddToggle("AutoIncubator", {
-	Text = "Auto Claim Incubator (Every 3 Min)",
+	Text = "Auto Claim Incubator",
 	Default = true,
-	Tooltip = "Automatically claims finished eggs from the incubator every 3 minutes.",
+	Tooltip = "Automatically claims finished eggs from the incubator.",
 	Callback = function(Value)
 		CONFIG.autoClaimIncubator = Value
 	end,
@@ -391,7 +456,6 @@ LeftGroupBox:AddSlider("MaxGenSlider", {
 	end,
 })
 
--- Right Column: Manual Actions & Script Termination
 local RightGroupBox = Tabs.Main:AddRightGroupbox("Manual & System Controls")
 
 RightGroupBox:AddButton({
@@ -437,7 +501,57 @@ RightGroupBox:AddButton({
 	Risky = true,
 })
 
--- UI Settings Tab
+-- TAB 2: Event Mob Tracking & Hover
+local EventLeftBox = Tabs.Event:AddLeftGroupbox("Auto Event")
+
+EventLeftBox:AddToggle("AutoTrackMob", {
+	Text = "Golden Goose",
+	Default = false,
+	Tooltip = "Continuously follows and hovers directly above active ChickenBody_npc:* targets.",
+	Callback = function(Value)
+		CONFIG.autoTrackEventMob = Value
+		updateEventTrackingState(Value)
+		if Value then
+			Library:Notify("Event Mob Tracking: Active", 2)
+		else
+			Library:Notify("Event Mob Tracking: Stopped", 2)
+		end
+	end,
+})
+
+EventLeftBox:AddSlider("HoverHeightSlider", {
+	Text = "Hover Height Distance",
+	Default = 10,
+	Min = 4,
+	Max = 35,
+	Rounding = 0,
+	Compact = false,
+	Tooltip = "Adjust vertical offset above the mob.",
+	Callback = function(Value)
+		CONFIG.hoverHeight = math.floor(Value)
+	end,
+})
+
+local EventRightBox = Tabs.Event:AddRightGroupbox("Manual Mob Actions")
+
+EventRightBox:AddButton({
+	Text = "📍 Teleport to Current Event Mob",
+	Func = function()
+		local npc, root = getTargetChickenMob()
+		local char = LocalPlayer.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+		if root and hrp then
+			hrp.CFrame = CFrame.new(root.Position + Vector3.new(0, CONFIG.hoverHeight, 0))
+			Library:Notify("Teleported to " .. npc.Name, 3)
+		else
+			Library:Notify("No active ChickenBody NPC found in Workspace", 3)
+		end
+	end,
+	Tooltip = "Instantly teleports above the current ChickenBody_npc in workspace.",
+})
+
+-- TAB 3: UI Settings
 local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu Configuration")
 
 MenuGroup:AddToggle("KeybindMenuOpen", {

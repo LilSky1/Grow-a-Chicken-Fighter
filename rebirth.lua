@@ -420,12 +420,11 @@ local Window = Library:CreateWindow({
 
 local Tabs = {
 	Main = Window:AddTab("Main", "user"),
-	Event = Window:AddTab("Event", "sparkles"),
 	AntiAFK = Window:AddTab("Anti AFK", "shield"),
 	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
 }
 
--- TAB 1: Main Automation & Manual Controls
+-- TAB 1: Main Automation & Event Controls
 local LeftGroupBox = Tabs.Main:AddLeftGroupbox("Automation Controls")
 
 LeftGroupBox:AddToggle("MasterAutoFarm", {
@@ -476,55 +475,9 @@ LeftGroupBox:AddSlider("MaxGenSlider", {
 	end,
 })
 
-local RightGroupBox = Tabs.Main:AddRightGroupbox("Manual & System Controls")
+local RightGroupBox = Tabs.Main:AddRightGroupbox("Auto Event")
 
-RightGroupBox:AddButton({
-	Text = "🚀 Send Chicken to Tower",
-	Func = function()
-		startTower(true, sessionId)
-		Library:Notify("Chicken dispatched to Tower", 2)
-	end,
-	Tooltip = "Instantly sends chicken to highest available Tower floor.",
-})
-
-RightGroupBox:AddButton({
-	Text = "🥚 Claim Incubator Now",
-	Func = function()
-		safeInvoke("IncubatorClaim")
-		Library:Notify("Incubator Claim invoked", 2)
-	end,
-	Tooltip = "Manually triggers incubator reward collection.",
-})
-
-RightGroupBox:AddButton({
-	Text = "🔄 Attempt Rebirth Now",
-	Func = function()
-		local ok, res = tryRebirth()
-		if ok then
-			Library:Notify("🎉 Rebirth Successful!", 3)
-		else
-			Library:Notify("❌ Rebirth Failed: " .. tostring(res), 3)
-		end
-	end,
-	Tooltip = "Attempts to trigger Rebirth immediately.",
-})
-
-RightGroupBox:AddDivider()
-
-RightGroupBox:AddButton({
-	Text = "❌ Kill Script & Destroy UI",
-	Func = function()
-		stopAll()
-		Library:Unload()
-	end,
-	Tooltip = "Completely halts automation threads and destroys the UI screen.",
-	Risky = true,
-})
-
--- TAB 2: Event Mob Tracking & Hover
-local EventLeftBox = Tabs.Event:AddLeftGroupbox("Auto Event")
-
-EventLeftBox:AddToggle("AutoTrackMob", {
+RightGroupBox:AddToggle("AutoTrackMob", {
 	Text = "Golden Goose",
 	Default = false,
 	Tooltip = "Continuously follows and hovers directly above active ChickenBody_npc:* targets.",
@@ -539,7 +492,7 @@ EventLeftBox:AddToggle("AutoTrackMob", {
 	end,
 })
 
-EventLeftBox:AddSlider("HoverHeightSlider", {
+RightGroupBox:AddSlider("HoverHeightSlider", {
 	Text = "Hover Height Distance",
 	Default = 10,
 	Min = 4,
@@ -552,9 +505,9 @@ EventLeftBox:AddSlider("HoverHeightSlider", {
 	end,
 })
 
-local EventRightBox = Tabs.Event:AddRightGroupbox("Manual Mob Actions")
+RightGroupBox:AddDivider()
 
-EventRightBox:AddButton({
+RightGroupBox:AddButton({
 	Text = "📍 Teleport to Current Event Mob",
 	Func = function()
 		local npc, root = getTargetChickenMob()
@@ -571,7 +524,16 @@ EventRightBox:AddButton({
 	Tooltip = "Instantly teleports above the current ChickenBody_npc in workspace.",
 })
 
--- TAB 3: Anti AFK Controls
+RightGroupBox:AddButton({
+	Text = "❌ Kill Script & Destroy UI",
+	Func = function()
+		stopAll()
+		Library:Unload()
+	end,
+	Tooltip = "Halts all automation and unloads the UI.",
+})
+
+-- TAB 2: Anti AFK Controls
 local AntiAFKLeftBox = Tabs.AntiAFK:AddLeftGroupbox("Anti-AFK System")
 
 AntiAFKLeftBox:AddToggle("EnableAntiAFKToggle", {
@@ -625,7 +587,7 @@ AntiAFKRightBox:AddButton({
 	Tooltip = "Triggers the 3-stud walk forward & back test immediately.",
 })
 
--- TAB 4: UI Settings
+-- TAB 3: UI Settings
 local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu Configuration")
 
 MenuGroup:AddToggle("KeybindMenuOpen", {
@@ -661,7 +623,7 @@ MenuGroup:AddLabel("Menu Keybind"):AddKeyPicker("MenuKeybind", {
 	Text = "Menu Keybind"
 })
 
-MenuGroup:AddButton("Unload UI", function()
+MenuGroup:AddButton("❌ Kill Script & Destroy UI", function()
 	stopAll()
 	Library:Unload()
 end)
@@ -682,6 +644,41 @@ SaveManager:BuildConfigSection(Tabs["UI Settings"])
 ThemeManager:ApplyToTab(Tabs["UI Settings"])
 
 SaveManager:LoadAutoloadConfig()
+
+-- Create Top-Right Window Close Button (✕) next to drag handle
+task.spawn(function()
+	task.wait(0.5)
+	pcall(function()
+		local outer = Library.Outer
+		if not outer then return end
+
+		local oldBtn = outer:FindFirstChild("HeaderCloseButton", true)
+		if oldBtn then oldBtn:Destroy() end
+
+		local topContainer = outer:FindFirstChild("TopBar") or outer:FindFirstChild("Header") or outer
+
+		local closeBtn = Instance.new("TextButton")
+		closeBtn.Name = "HeaderCloseButton"
+		closeBtn.Size = UDim2.new(0, 22, 0, 22)
+		closeBtn.Position = UDim2.new(1, -30, 0, 4)
+		closeBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
+		closeBtn.Text = "✕"
+		closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		closeBtn.Font = Enum.Font.GothamBold
+		closeBtn.TextSize = 13
+		closeBtn.BorderSizePixel = 0
+		closeBtn.ZIndex = 99999
+		closeBtn.Parent = topContainer
+
+		local corner = Instance.new("UICorner", closeBtn)
+		corner.CornerRadius = UDim.new(0, 4)
+
+		closeBtn.MouseButton1Click:Connect(function()
+			stopAll()
+			Library:Unload()
+		end)
+	end)
+end)
 
 -- Start Automation
 startLoops()

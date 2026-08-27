@@ -640,7 +640,7 @@ MenuGroup:AddToggle("KeybindMenuOpen", {
 
 MenuGroup:AddToggle("ShowCustomCursor", {
 	Text = "Custom Cursor",
-	Default = true,
+	Default = false,
 	Callback = function(Value)
 		Library.ShowCustomCursor = Value
 	end,

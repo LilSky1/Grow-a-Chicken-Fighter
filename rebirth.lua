@@ -48,11 +48,18 @@ local CONFIG = {
 	-- Nest Egg Collection Configuration
 	autoCollectNestEggs = true,
 	nestEggCheckInterval = 3,  -- Every 3 seconds
+
+	-- Golden Goose Tracker Configuration
+	autoTrackGoldenGoose = false,
+	autoAttackGoldenGoose = true,
+	goldenGooseHoverHeight = 6,
+	goldenGooseTeleportInterval = 3, -- Teleport once every 3 seconds (Anti-Kick)
 }
 
 local sessionId = 0
 local isLoopRunning = false
 local currentGeneratorTarget = 1
+local goldenGooseConnection = nil
 
 ---------------------------------------------------------
 -- 🛡️ SAFE ANTI-AFK (Human-like Walk Simulation Every 10 Mins)
@@ -335,12 +342,177 @@ local function tryCollectNestEggs()
 	end
 end
 
+---------------------------------------------------------
+-- 🐔 GOLDEN GOOSE STRICT TARGETING & TRACKING LOGIC
+---------------------------------------------------------
+local function findRootPart(inst)
+	if not inst then return nil end
+	if inst:IsA("BasePart") then return inst end
+	if inst:IsA("Model") then
+		if inst.PrimaryPart then return inst.PrimaryPart end
+		local hrp = inst:FindFirstChild("HumanoidRootPart", true) or inst:FindFirstChild("Head", true) or inst:FindFirstChild("Torso", true) or inst:FindFirstChildWhichIsA("BasePart", true)
+		if hrp then return hrp end
+	end
+	return inst:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local lastDebugNotifyTime = 0
+local lastFoundTargetName = ""
+local lastPrintLogTime = 0
+
+local function isGoldenGooseMob(npc)
+	if not npc then return false end
+
+	-- Must be a Model or BasePart inside workspace.ChickenBodies
+	if not (npc:IsA("Model") or npc:IsA("BasePart")) then
+		return false
+	end
+
+	local name = npc.Name:lower()
+
+	-- 1. Exclude coop chickens and tower rivals
+	if name:find("coop") or name:find("tower") or name:find("rival") then
+		return false
+	end
+
+	-- 2. Check ovName attribute: MUST NOT be "Chicken Boss"
+	local ovName = npc:GetAttribute("ovName")
+	if ovName then
+		local ovStr = tostring(ovName):lower()
+		if ovStr:find("boss") or ovStr:find("chicken boss") then
+			return false
+		end
+		if ovStr:find("golden") or ovStr:find("goose") then
+			print("[Goose Tracker Debug] MATCHED by ovName 'Golden Goose': " .. npc.Name)
+			return true
+		end
+	end
+
+	-- 3. Check ovNameKey attribute: MUST NOT be boss.chickenBoss
+	local ovNameKey = npc:GetAttribute("ovNameKey")
+	if ovNameKey then
+		local keyStr = tostring(ovNameKey):lower()
+		if keyStr:find("boss") then
+			return false
+		end
+		if keyStr:find("golden") or keyStr:find("goose") then
+			print("[Goose Tracker Debug] MATCHED by ovNameKey: " .. npc.Name)
+			return true
+		end
+	end
+
+	-- 4. Check cos_color attribute: Must contain "golden"
+	local cosColor = npc:GetAttribute("cos_color")
+	if cosColor and tostring(cosColor):lower():find("golden") then
+		print("[Goose Tracker Debug] MATCHED by cos_color 'golden': " .. npc.Name)
+		return true
+	end
+
+	-- 5. Direct child GooseDamagePodium (GooseDamagePodium is UNIQUE to Golden Goose!)
+	if npc:FindFirstChild("GooseDamagePodium") then
+		print("[Goose Tracker Debug] MATCHED by GooseDamagePodium: " .. npc.Name)
+		return true
+	end
+
+	return false
+end
+
+local function getTargetGoldenGoose()
+	local folder = workspace:FindFirstChild("ChickenBodies")
+	if not folder then
+		print("[Goose Tracker Debug] workspace.ChickenBodies folder does not exist!")
+		return nil, nil, 0
+	end
+
+	local children = folder:GetChildren()
+	local checkedCount = #children
+
+	for _, npc in ipairs(children) do
+		if isGoldenGooseMob(npc) then
+			local root = findRootPart(npc)
+			if root then
+				if npc.Name ~= lastFoundTargetName and tick() - lastDebugNotifyTime > 3 then
+					lastFoundTargetName = npc.Name
+					lastDebugNotifyTime = tick()
+					Library:Notify("[Goose Debug] Target Acquired: " .. npc.Name, 3)
+					print(string.format("[Goose Tracker Debug] >>> TARGET ACQUIRED: workspace.ChickenBodies['%s'] (Root: %s, Pos: %.1f, %.1f, %.1f)", npc.Name, root.Name, root.Position.X, root.Position.Y, root.Position.Z))
+				end
+				return npc, root, checkedCount
+			end
+		end
+	end
+
+	return nil, nil, checkedCount
+end
+
+local GoldenGooseStatusLabel = nil
+local trackerSessionId = 0
+
+local function updateGoldenGooseTracker(enable)
+	_G.__GoldenGooseTrackerActive = enable
+	trackerSessionId = trackerSessionId + 1
+	local currentTrackerSession = trackerSessionId
+
+	print("[Goose Tracker Debug] updateGoldenGooseTracker state changed to: " .. tostring(enable))
+
+	if not enable then
+		if GoldenGooseStatusLabel then GoldenGooseStatusLabel:SetText("Status: Tracker Disabled") end
+		return
+	end
+
+	task.spawn(function()
+		while CONFIG.autoTrackGoldenGoose and _G.__GoldenGooseTrackerActive and not _G.__AutoFarmRebirthStop and trackerSessionId == currentTrackerSession do
+			pcall(function()
+				local char = LocalPlayer.Character
+				local hrp = char and char:FindFirstChild("HumanoidRootPart")
+				local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+				if hrp and hum and hum.Health > 0 then
+					local targetNpc, targetRoot, checkedCount = getTargetGoldenGoose()
+					if targetRoot then
+						local displayName = targetNpc:GetAttribute("ovName") or targetNpc.Name
+						if GoldenGooseStatusLabel then
+							GoldenGooseStatusLabel:SetText("Status: Teleporting every 3s to " .. tostring(displayName) .. " (" .. targetNpc.Name .. ")")
+						end
+
+						print(string.format("[Goose Tracker Debug] >>> Teleporting player to Golden Goose '%s' (%s) at CFrame Pos: %.1f, %.1f, %.1f", tostring(displayName), targetNpc.Name, targetRoot.Position.X, targetRoot.Position.Y + CONFIG.goldenGooseHoverHeight, targetRoot.Position.Z))
+
+						-- 1. Teleport player once every 3 seconds above Golden Goose
+						hrp.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, CONFIG.goldenGooseHoverHeight, 0))
+
+						-- 2. Remote Attacks
+						local fired = safeInvoke("SetChickenOrder", "chaos")
+						if fired then
+							print("[Goose Tracker Debug] Fired Remote 'SetChickenOrder' ('chaos')")
+						end
+
+						if CONFIG.autoAttackGoldenGoose and targetNpc then
+							safeInvoke("AttackMob", targetNpc)
+							safeInvoke("HitMob", targetNpc)
+							safeInvoke("DamageMob", targetNpc)
+						end
+					else
+						print(string.format("[Goose Tracker Debug] Searching... Checked %d items in ChickenBodies. No Golden Goose target active.", checkedCount))
+						if GoldenGooseStatusLabel then
+							GoldenGooseStatusLabel:SetText("Status: Searching in ChickenBodies (" .. tostring(checkedCount) .. " items checked)...")
+						end
+					end
+				end
+			end)
+
+			task.wait(CONFIG.goldenGooseTeleportInterval or 3)
+		end
+	end)
+end
+
 local function stopAll()
 	CONFIG.enabled = false
 	_G.__AutoFarmRebirthStop = true
 	_G.__AutoFarmRebirthRunning = false
+	_G.__GoldenGooseTrackerActive = false
 	isLoopRunning = false
 	sessionId = sessionId + 1
+	trackerSessionId = trackerSessionId + 1
 end
 
 local function startLoops()
@@ -353,6 +525,10 @@ local function startLoops()
 	
 	sessionId = sessionId + 1
 	local currentSession = sessionId
+
+	if CONFIG.autoTrackGoldenGoose then
+		updateGoldenGooseTracker(true)
+	end
 
 	task.spawn(function()
 		tryBuyAndUpgradeGenerators()
@@ -577,7 +753,7 @@ MainRightBox:AddButton({
 	Tooltip = "Halts all automation threads and unloads the UI.",
 })
 
--- TAB 2: Event Information & Countdown
+-- TAB 2: Event Information & Controls
 local EventLeftBox = Tabs.Event:AddLeftGroupbox("Event Status & Countdown")
 
 local EventNameLabel = EventLeftBox:AddLabel("Event: Loading...")
@@ -613,6 +789,67 @@ task.spawn(function()
 		end)
 	end
 end)
+
+local EventRightBox = Tabs.Event:AddRightGroupbox("Golden Goose Tracker & Attack")
+
+EventRightBox:AddToggle("AutoTrackGoldenGoose", {
+	Text = "Golden Goose Tracker",
+	Default = false,
+	Tooltip = "Strictly targets and hovers directly above active Golden Goose (GooseDamagePodium / ovName=Golden Goose).",
+	Callback = function(Value)
+		CONFIG.autoTrackGoldenGoose = Value
+		updateGoldenGooseTracker(Value)
+		if Value then
+			Library:Notify("Golden Goose Tracker: Active", 2)
+		else
+			Library:Notify("Golden Goose Tracker: Stopped", 2)
+		end
+	end,
+})
+
+EventRightBox:AddToggle("AutoAttackGoldenGoose", {
+	Text = "Auto Attack Golden Goose",
+	Default = true,
+	Tooltip = "Automatically sends chickens to attack Golden Goose on arena ('chaos') while hovering.",
+	Callback = function(Value)
+		CONFIG.autoAttackGoldenGoose = Value
+	end,
+})
+
+EventRightBox:AddSlider("GooseHoverHeightSlider", {
+	Text = "Hover Distance",
+	Default = 10,
+	Min = 4,
+	Max = 35,
+	Rounding = 0,
+	Compact = false,
+	Tooltip = "Adjust vertical hover height above Golden Goose.",
+	Callback = function(Value)
+		CONFIG.goldenGooseHoverHeight = math.floor(Value)
+	end,
+})
+
+GoldenGooseStatusLabel = EventRightBox:AddLabel("Status: Tracker Disabled")
+
+EventRightBox:AddDivider()
+
+EventRightBox:AddButton({
+	Text = "📍 Teleport to Golden Goose",
+	Func = function()
+		local npc, root = getTargetGoldenGoose()
+		local char = LocalPlayer.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+		if root and hrp then
+			hrp.CFrame = CFrame.new(root.Position + Vector3.new(0, CONFIG.goldenGooseHoverHeight, 0))
+			local name = npc:GetAttribute("ovName") or npc.Name
+			Library:Notify("Teleported to " .. tostring(name), 3)
+		else
+			Library:Notify("Golden Goose not found in Workspace", 3)
+		end
+	end,
+	Tooltip = "Instantly teleports above active Golden Goose target.",
+})
 
 -- TAB 3: Anti AFK Controls
 local AntiAFKLeftBox = Tabs.AntiAFK:AddLeftGroupbox("AFK Protection")

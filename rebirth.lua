@@ -439,14 +439,14 @@ end
 -- OBSIDIAN UI SETUP
 ---------------------------------------------------------
 local Window = Library:CreateWindow({
-	Title = "Chicken By Lilsky1",
-	Footer = "version: 1.0.0",
+	Title = "Grow a Chicken Fighter",
+	Footer = "Powered by Lilsky1",
 	NotifySide = "Right",
 	ShowCustomCursor = true,
 })
 
 local Tabs = {
-	Main = Window:AddTab("Main", "user"),
+	Main = Window:AddTab("Auto Farm", "user"),
 	Event = Window:AddTab("Event", "sparkles"),
 	AntiAFK = Window:AddTab("Anti AFK", "shield"),
 	["UI Settings"] = Window:AddTab("UI Settings", "settings"),

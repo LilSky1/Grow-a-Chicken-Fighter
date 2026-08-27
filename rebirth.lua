@@ -44,6 +44,10 @@ local CONFIG = {
 	-- Anti-AFK Configuration
 	autoAntiAFK = true,
 	antiAFKInterval = 600,     -- 10 Minutes (600s)
+
+	-- Nest Egg Collection Configuration
+	autoCollectNestEggs = true,
+	nestEggCheckInterval = 3,  -- Every 3 seconds
 }
 
 local sessionId = 0
@@ -278,6 +282,59 @@ local function tryRebirth()
 	return false, tostring(result)
 end
 
+---------------------------------------------------------
+-- 🥚 AUTOMATED NEST EGG COLLECTION LOGIC
+---------------------------------------------------------
+local function tryCollectNestEggs()
+	if not CONFIG.autoCollectNestEggs or _G.__AutoFarmRebirthStop then return end
+
+	local folder = workspace:FindFirstChild("NestEggs")
+	if not folder then return end
+
+	local char = LocalPlayer.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+	for _, nestEgg in ipairs(folder:GetChildren()) do
+		if not CONFIG.enabled or _G.__AutoFarmRebirthStop then break end
+
+		local ownerAttr = nestEgg:GetAttribute("owner")
+		local isMyEgg = false
+
+		if ownerAttr then
+			if tonumber(ownerAttr) == LocalPlayer.UserId or tostring(ownerAttr) == tostring(LocalPlayer.UserId) or tostring(ownerAttr) == LocalPlayer.Name then
+				isMyEgg = true
+			end
+		else
+			isMyEgg = true
+		end
+
+		if isMyEgg then
+			-- 1. Fire Remote collection if available
+			local eggId = nestEgg:GetAttribute("eggId")
+			if eggId then
+				safeInvoke("CollectNestEgg", eggId)
+				safeInvoke("ClaimNestEgg", eggId)
+				safeInvoke("CollectEgg", eggId)
+			end
+			safeInvoke("CollectNestEgg", nestEgg)
+
+			-- 2. Touch Interest collection (firetouchinterest)
+			if hrp then
+				local targetPart = nestEgg:IsA("BasePart") and nestEgg or nestEgg:FindFirstChildWhichIsA("BasePart", true)
+				if targetPart then
+					if firetouchinterest then
+						pcall(function()
+							firetouchinterest(hrp, targetPart, 0)
+							task.wait(0.02)
+							firetouchinterest(hrp, targetPart, 1)
+						end)
+					end
+				end
+			end
+		end
+	end
+end
+
 local function stopAll()
 	CONFIG.enabled = false
 	_G.__AutoFarmRebirthStop = true
@@ -299,6 +356,7 @@ local function startLoops()
 
 	task.spawn(function()
 		tryBuyAndUpgradeGenerators()
+		tryCollectNestEggs()
 		if CONFIG.autoClaimIncubator then
 			safeInvoke("IncubatorClaim")
 		end
@@ -369,6 +427,57 @@ local function startLoops()
 			_G.__AutoFarmRebirthRunning = false
 		end
 	end)
+
+	-- 5. Loop Auto Collect Nest Eggs
+	task.spawn(function()
+		while CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession do
+			if CONFIG.autoCollectNestEggs then
+				tryCollectNestEggs()
+			end
+			if not smartWait(CONFIG.nestEggCheckInterval or 3, currentSession) then break end
+		end
+	end)
+end
+
+---------------------------------------------------------
+-- 🎪 EVENT CARD & INFO LOGIC
+---------------------------------------------------------
+local function getEventInfo()
+	local anchor = workspace:FindFirstChild("EventCardAnchor")
+	if not anchor then return "No Event Anchor", "N/A", "N/A" end
+
+	local eventCard = anchor:FindFirstChild("EventCard")
+	if not eventCard then return "No Event Card", "N/A", "N/A" end
+
+	for _, child in ipairs(eventCard:GetChildren()) do
+		if child:IsA("GuiObject") or child:IsA("CanvasGroup") or child.Name:find("@") or child.Name:find("idle") or child.Name:find("active") then
+			-- Name Label (e.g. "CHICKEN BOSS")
+			local nameLabel = child:FindFirstChild("name", true)
+			local eventName = (nameLabel and nameLabel:IsA("TextLabel") and nameLabel.Text ~= "" and nameLabel.Text) or "Unknown Event"
+
+			-- Sub Label (e.g. "UPCOMING")
+			local subLabel = child:FindFirstChild("sub", true)
+			local eventSub = (subLabel and subLabel:IsA("TextLabel") and subLabel.Text ~= "" and subLabel.Text) or "N/A"
+
+			-- Time Label (e.g. time.label -> "3:32")
+			local timeObj = child:FindFirstChild("time", true)
+			local eventTime = "N/A"
+			if timeObj then
+				if timeObj:IsA("TextLabel") and timeObj.Text ~= "" then
+					eventTime = timeObj.Text
+				else
+					local labelInTime = timeObj:FindFirstChild("label", true) or timeObj:FindFirstChildWhichIsA("TextLabel", true)
+					if labelInTime and labelInTime:IsA("TextLabel") and labelInTime.Text ~= "" then
+						eventTime = labelInTime.Text
+					end
+				end
+			end
+
+			return eventName, eventSub, eventTime
+		end
+	end
+
+	return "No Active Event", "N/A", "N/A"
 end
 
 ---------------------------------------------------------
@@ -383,6 +492,7 @@ local Window = Library:CreateWindow({
 
 local Tabs = {
 	Main = Window:AddTab("Auto Farm", "user"),
+	Event = Window:AddTab("Event", "sparkles"),
 	AntiAFK = Window:AddTab("Anti AFK", "shield"),
 	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
 }
@@ -447,6 +557,15 @@ MainRightBox:AddToggle("AutoIncubator", {
 	end,
 })
 
+MainRightBox:AddToggle("AutoCollectNestEggs", {
+	Text = "Auto Collect Nest Eggs",
+	Default = true,
+	Tooltip = "Automatically collects nest eggs in workspace.NestEggs that belong to your player UserId.",
+	Callback = function(Value)
+		CONFIG.autoCollectNestEggs = Value
+	end,
+})
+
 MainRightBox:AddDivider()
 
 MainRightBox:AddButton({
@@ -457,6 +576,43 @@ MainRightBox:AddButton({
 	end,
 	Tooltip = "Halts all automation threads and unloads the UI.",
 })
+
+-- TAB 2: Event Information & Countdown
+local EventLeftBox = Tabs.Event:AddLeftGroupbox("Event Status & Countdown")
+
+local EventNameLabel = EventLeftBox:AddLabel("Event: Loading...")
+local EventSubLabel = EventLeftBox:AddLabel("Status: Loading...")
+local EventTimeLabel = EventLeftBox:AddLabel("Time Until Start: Loading...")
+
+EventLeftBox:AddDivider()
+
+EventLeftBox:AddButton({
+	Text = "🔄 Refresh Event Info",
+	Func = function()
+		local name, sub, timeStr = getEventInfo()
+		EventNameLabel:SetText("Event: " .. name)
+		EventSubLabel:SetText("Status: " .. sub)
+		EventTimeLabel:SetText("Time Until Start: " .. timeStr)
+		Library:Notify("Event Info Refreshed", 2)
+	end,
+	Tooltip = "Manually updates event information from Workspace.",
+})
+
+-- Live auto-refresh loop for Event Info
+task.spawn(function()
+	while true do
+		task.wait(1)
+		if _G.__AutoFarmRebirthStop then break end
+		pcall(function()
+			if EventNameLabel and EventSubLabel and EventTimeLabel then
+				local name, sub, timeStr = getEventInfo()
+				EventNameLabel:SetText("Event: " .. name)
+				EventSubLabel:SetText("Status: " .. sub)
+				EventTimeLabel:SetText("Time Until Start: " .. timeStr)
+			end
+		end)
+	end
+end)
 
 -- TAB 3: Anti AFK Controls
 local AntiAFKLeftBox = Tabs.AntiAFK:AddLeftGroupbox("AFK Protection")
@@ -525,7 +681,7 @@ MenuGroup:AddToggle("KeybindMenuOpen", {
 
 MenuGroup:AddToggle("ShowCustomCursor", {
 	Text = "Custom Cursor",
-	Default = false,
+	Default = true,
 	Callback = function(Value)
 		Library.ShowCustomCursor = Value
 	end,

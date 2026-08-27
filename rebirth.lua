@@ -311,7 +311,6 @@ end
 
 local function stopAll()
 	CONFIG.enabled = false
-	CONFIG.autoTrackEventMob = false
 	_G.__AutoFarmRebirthStop = true
 	_G.__AutoFarmRebirthRunning = false
 	isLoopRunning = false
@@ -333,6 +332,10 @@ local function startLoops()
 	
 	sessionId = sessionId + 1
 	local currentSession = sessionId
+
+	if CONFIG.autoTrackEventMob then
+		updateEventTrackingState(true)
+	end
 
 	task.spawn(function()
 		tryBuyAndUpgradeGenerators()

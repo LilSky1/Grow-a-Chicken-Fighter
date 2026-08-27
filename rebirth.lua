@@ -51,7 +51,7 @@ local CONFIG = {
 
 	-- Golden Goose Tracker Configuration
 	autoTrackGoldenGoose = false,
-	autoAttackGoldenGoose = true,
+	autoAttackGoldenGoose = false,
 	goldenGooseHoverHeight = 6,
 	goldenGooseTeleportInterval = 3, -- Teleport once every 3 seconds (Anti-Kick)
 }
@@ -157,9 +157,81 @@ local function safeInvoke(remoteName, ...)
 	return false, nil
 end
 
+---------------------------------------------------------
+-- 🔄 REBIRTH UI COLOR CHECK LOGIC
+---------------------------------------------------------
+local function getRebirthBar()
+	local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:FindFirstChild("PlayerGui")
+	if not playerGui then return nil end
+
+	-- 1. Try direct path provided: PlayerGui:GetChildren()[11].Frame.window.panel.face.content.content.body.reqCard.face.content.bar
+	local ok, bar = pcall(function()
+		local children = playerGui:GetChildren()
+		if children[11] then
+			return children[11].Frame.window.panel.face.content.content.body.reqCard.face.content.bar
+		end
+	end)
+	if ok and bar then return bar end
+
+	-- 2. Fallback: Dynamic search across all ScreenGuis in PlayerGui for reqCard -> bar
+	for _, gui in ipairs(playerGui:GetChildren()) do
+		local reqCard = gui:FindFirstChild("reqCard", true)
+		if reqCard then
+			local foundBar = reqCard:FindFirstChild("bar", true)
+			if foundBar then
+				return foundBar
+			end
+		end
+	end
+
+	return nil
+end
+
+local function isRebirthReadyFromUI()
+	local bar = getRebirthBar()
+	if not bar then return nil end
+
+	-- Collect candidate colors from bar and its descendants
+	local candidateColors = {}
+	if bar:IsA("GuiObject") then
+		table.insert(candidateColors, bar.BackgroundColor3)
+		if bar:IsA("ImageLabel") or bar:IsA("ImageButton") then
+			table.insert(candidateColors, bar.ImageColor3)
+		end
+	end
+
+	for _, child in ipairs(bar:GetDescendants()) do
+		if child:IsA("GuiObject") then
+			table.insert(candidateColors, child.BackgroundColor3)
+			if child:IsA("ImageLabel") or child:IsA("ImageButton") then
+				table.insert(candidateColors, child.ImageColor3)
+			end
+		end
+	end
+
+	for _, color in ipairs(candidateColors) do
+		local r = math.floor(color.R * 255 + 0.5)
+		local g = math.floor(color.G * 255 + 0.5)
+		local b = math.floor(color.B * 255 + 0.5)
+
+		-- Ready color: RGB (8, 78, 15) - Greenish
+		if (math.abs(r - 8) <= 12 and math.abs(g - 78) <= 15 and math.abs(b - 15) <= 12) or (g > r + 30 and g > b + 30) then
+			return true
+		end
+
+		-- Not ready color: RGB (0, 57, 89) - Blueish
+		if (math.abs(r - 0) <= 12 and math.abs(g - 57) <= 15 and math.abs(b - 89) <= 15) or (b > r + 30 and b > g + 10) then
+			return false
+		end
+	end
+
+	return nil
+end
+
 -- Progressive Generator Upgrade & Step-by-Step Coop Expansion
 local function tryBuyAndUpgradeGenerators()
 	if not CONFIG.enabled or _G.__AutoFarmRebirthStop then return end
+	if isRebirthReadyFromUI() == true then return end
 
 	if CONFIG.upgradeAllAtOnce then
 		-- Mode: Upgrade All Generators Simultaneously (Round-Robin)
@@ -246,12 +318,20 @@ end
 
 local function startTower(skipCooldown, currentSession)
 	if not CONFIG.enabled or _G.__AutoFarmRebirthStop or sessionId ~= currentSession then return end
+	if isRebirthReadyFromUI() == true then
+		safeInvoke("TowerSurrender")
+		return
+	end
 
 	if not skipCooldown and CONFIG.cooldownBeforeTower > 0 then
 		if not smartWait(CONFIG.cooldownBeforeTower, currentSession) then return end
 	end
 
 	if not CONFIG.enabled or _G.__AutoFarmRebirthStop or sessionId ~= currentSession then return end
+	if isRebirthReadyFromUI() == true then
+		safeInvoke("TowerSurrender")
+		return
+	end
 
 	safeInvoke("TowerContinueDecline")
 	task.wait(0.1)
@@ -270,6 +350,12 @@ local function startTower(skipCooldown, currentSession)
 end
 
 local function tryRebirth()
+	local uiReady = isRebirthReadyFromUI()
+	if uiReady == false then
+		-- Rebirth requirement is explicitly NOT ready yet according to UI bar color (0, 57, 89)
+		return false, "UI bar indicates not ready (color 0, 57, 89)"
+	end
+
 	local ok, result = safeInvoke("Rebirth")
 	if ok then
 		if type(result) == "table" and result.ok == false then return false, result.error or "ok=false" end
@@ -573,9 +659,30 @@ local function startLoops()
 	-- 4. Loop Auto Rebirth
 	task.spawn(function()
 		while CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession do
-			local ok, _ = tryRebirth()
+			local uiReady = isRebirthReadyFromUI()
 
-			if ok then
+			if uiReady == true then
+				-- 1. Stop tower & exit/surrender immediately so player comes down
+				safeInvoke("TowerSurrender")
+				task.wait(0.5)
+
+				-- 2. Once down, stop doing everything else and spam Rebirth until bar color turns to 0, 57, 89
+				while CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession do
+					local currentState = isRebirthReadyFromUI()
+					if currentState == false then
+						-- Bar turned into 0, 57, 89 (Not ready) -> Rebirth success!
+						break
+					end
+
+					-- Fire Rebirth remotes repeatedly
+					safeInvoke("Rebirth")
+					if okReq and CoreRemotes and CoreRemotes.defs and CoreRemotes.defs.Rebirth then
+						pcall(function() CoreRemotes.invoke(CoreRemotes.defs.Rebirth) end)
+					end
+					task.wait(0.2)
+				end
+
+				-- 3. Post-Rebirth milestone claim & restart sequence
 				safeInvoke("TowerSurrender")
 
 				if okReq and CoreRemotes and CoreRemotes.defs and (CoreRemotes.defs.ClaimRebirthMilestones or CoreRemotes.defs.ClaimRebirthMilestone) then
@@ -595,7 +702,32 @@ local function startLoops()
 				if CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession then
 					startTower(false, currentSession)
 				end
+			else
+				local ok, _ = tryRebirth()
+
+				if ok then
+					safeInvoke("TowerSurrender")
+
+					if okReq and CoreRemotes and CoreRemotes.defs and (CoreRemotes.defs.ClaimRebirthMilestones or CoreRemotes.defs.ClaimRebirthMilestone) then
+						local def = CoreRemotes.defs.ClaimRebirthMilestones or CoreRemotes.defs.ClaimRebirthMilestone
+						pcall(function() CoreRemotes.invoke(def) end)
+					else
+						safeInvoke("ClaimRebirthMilestones")
+					end
+
+					currentGeneratorTarget = 1
+
+					task.wait(1.0)
+					tryBuyAndUpgradeGenerators()
+
+					if not smartWait(CONFIG.cooldownAfterRebirth, currentSession) then break end
+
+					if CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession then
+						startTower(false, currentSession)
+					end
+				end
 			end
+
 			if not smartWait(CONFIG.rebirthCheckInterval, currentSession) then break end
 		end
 		if sessionId == currentSession then
@@ -723,6 +855,32 @@ MainRightBox:AddToggle("MasterAutoFarm", {
 		end
 	end,
 })
+
+local RebirthStatusLabel = MainRightBox:AddLabel("Status: Loading...")
+
+-- Live auto-refresh loop for Rebirth Status Label
+task.spawn(function()
+	while true do
+		task.wait(0.5)
+		if _G.__AutoFarmRebirthStop then break end
+		pcall(function()
+			if RebirthStatusLabel then
+				if RebirthStatusLabel.TextLabel then
+					RebirthStatusLabel.TextLabel.RichText = true
+				end
+
+				local readyState = isRebirthReadyFromUI()
+				if readyState == true then
+					RebirthStatusLabel:SetText('Status: <font color="#00FF7F"><b>🟢 READY TO REBIRTH</b></font>')
+				elseif readyState == false then
+					RebirthStatusLabel:SetText('Status: <font color="#FF4D4D"><b>🔴 NOT READY</b></font>')
+				else
+					RebirthStatusLabel:SetText('Status: <font color="#AAAAAA"><b>⚪ SEARCHING UI...</b></font>')
+				end
+			end
+		end)
+	end
+end)
 
 MainRightBox:AddToggle("AutoIncubator", {
 	Text = "Auto Claim Incubator",

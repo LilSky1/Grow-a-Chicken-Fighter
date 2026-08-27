@@ -31,6 +31,7 @@ local Toggles = Library.Toggles
 local CONFIG = {
 	enabled = true,
 	autoUpgrade = true,
+	upgradeAllAtOnce = false,   -- false: Sequential 1-by-1 | true: Upgrade All Simultaneously
 	autoClaimIncubator = true,
 	maxGenerators = 6,          -- Configurable from 1 to 6
 	upgradeInterval = 0.10,     -- Turbo Delay (0.10s)
@@ -153,46 +154,69 @@ end
 local function tryBuyAndUpgradeGenerators()
 	if not CONFIG.enabled or _G.__AutoFarmRebirthStop then return end
 
-	if currentGeneratorTarget > CONFIG.maxGenerators then
-		currentGeneratorTarget = CONFIG.maxGenerators
-	end
+	if CONFIG.upgradeAllAtOnce then
+		-- Mode: Upgrade All Generators Simultaneously (Round-Robin)
+		for i = 1, CONFIG.maxGenerators do
+			if not CONFIG.enabled or _G.__AutoFarmRebirthStop then break end
 
-	-- 1. If target is generator 3 or higher, expand coop first
-	if currentGeneratorTarget >= 3 then
-		safeInvoke("ExpandCoop")
-	end
-
-	-- 2. Unlock / Buy current generator slot
-	if validRemotes["BuyGenerator"] then
-		safeInvoke("BuyGenerator", currentGeneratorTarget)
-	elseif validRemotes["PurchaseGenerator"] then
-		safeInvoke("PurchaseGenerator", currentGeneratorTarget)
-	else
-		safeInvoke("BuyGenerator", currentGeneratorTarget)
-	end
-
-	-- 3. Turbo Upgrade current target generator
-	for _ = 1, 3 do
-		local ok, res = safeInvoke("UpgradeGenerator", currentGeneratorTarget)
-
-		local isMax = false
-		if ok and type(res) == "table" and res.error then
-			local err = tostring(res.error):lower()
-			if (string.find(err, "max") or string.find(err, "full")) and not string.find(err, "coop") and not string.find(err, "money") and not string.find(err, "cash") and not string.find(err, "afford") then
-				isMax = true
+			if i >= 3 then
+				safeInvoke("ExpandCoop")
 			end
+
+			if validRemotes["BuyGenerator"] then
+				safeInvoke("BuyGenerator", i)
+			elseif validRemotes["PurchaseGenerator"] then
+				safeInvoke("PurchaseGenerator", i)
+			else
+				safeInvoke("BuyGenerator", i)
+			end
+
+			safeInvoke("UpgradeGenerator", i)
+			task.wait(0.02)
+		end
+	else
+		-- Mode: Sequential Upgrade (1-by-1 to Max Level)
+		if currentGeneratorTarget > CONFIG.maxGenerators then
+			currentGeneratorTarget = CONFIG.maxGenerators
 		end
 
-		if isMax then
-			if currentGeneratorTarget < CONFIG.maxGenerators then
-				currentGeneratorTarget = currentGeneratorTarget + 1
-				if currentGeneratorTarget >= 3 then
-					safeInvoke("ExpandCoop")
+		-- 1. If target is generator 3 or higher, expand coop first
+		if currentGeneratorTarget >= 3 then
+			safeInvoke("ExpandCoop")
+		end
+
+		-- 2. Unlock / Buy current generator slot
+		if validRemotes["BuyGenerator"] then
+			safeInvoke("BuyGenerator", currentGeneratorTarget)
+		elseif validRemotes["PurchaseGenerator"] then
+			safeInvoke("PurchaseGenerator", currentGeneratorTarget)
+		else
+			safeInvoke("BuyGenerator", currentGeneratorTarget)
+		end
+
+		-- 3. Turbo Upgrade current target generator
+		for _ = 1, 3 do
+			local ok, res = safeInvoke("UpgradeGenerator", currentGeneratorTarget)
+
+			local isMax = false
+			if ok and type(res) == "table" and res.error then
+				local err = tostring(res.error):lower()
+				if (string.find(err, "max") or string.find(err, "full")) and not string.find(err, "coop") and not string.find(err, "money") and not string.find(err, "cash") and not string.find(err, "afford") then
+					isMax = true
 				end
 			end
-			break
+
+			if isMax then
+				if currentGeneratorTarget < CONFIG.maxGenerators then
+					currentGeneratorTarget = currentGeneratorTarget + 1
+					if currentGeneratorTarget >= 3 then
+						safeInvoke("ExpandCoop")
+					end
+				end
+				break
+			end
+			task.wait(0.04)
 		end
-		task.wait(0.04)
 	end
 end
 
@@ -423,49 +447,33 @@ local Window = Library:CreateWindow({
 
 local Tabs = {
 	Main = Window:AddTab("Main", "user"),
+	Event = Window:AddTab("Event", "sparkles"),
 	AntiAFK = Window:AddTab("Anti AFK", "shield"),
 	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
 }
 
--- TAB 1: Main Automation & Event Controls
-local LeftGroupBox = Tabs.Main:AddLeftGroupbox("Automation Controls")
+-- TAB 1: Main Automation Controls
+local MainLeftBox = Tabs.Main:AddLeftGroupbox("Feeder Automation")
 
-LeftGroupBox:AddToggle("MasterAutoFarm", {
-	Text = "Enable Auto Farm & Rebirth",
+MainLeftBox:AddToggle("AutoFeeder", {
+	Text = "Buy Feeder & Upgrade",
 	Default = true,
-	Tooltip = "Master switch for all automated farming, tower climbs, and rebirths.",
-	Callback = function(Value)
-		if Value then
-			startLoops()
-			Library:Notify("Auto Farm & Rebirth Enabled", 3)
-		else
-			stopAll()
-			Library:Notify("Auto Farm & Rebirth Disabled", 3)
-		end
-	end,
-})
-
-LeftGroupBox:AddToggle("AutoFeeder", {
-	Text = "Auto Feeder (Max & Expand)",
-	Default = true,
-	Tooltip = "Upgrades feeder slots sequentially to max level and auto expands coop.",
+	Tooltip = "Automates feeder slot purchases, upgrades, and coop expansion.",
 	Callback = function(Value)
 		CONFIG.autoUpgrade = Value
 	end,
 })
 
-LeftGroupBox:AddToggle("AutoIncubator", {
-	Text = "Auto Claim Incubator",
-	Default = true,
-	Tooltip = "Automatically claims finished eggs from the incubator.",
+MainLeftBox:AddToggle("UpgradeAllAtOnce", {
+	Text = "Upgrade All Feeders",
+	Default = false,
+	Tooltip = "OFF: Upgrades generators sequentially 1-by-1 to max level.\nON: Upgrades all unlocked generators simultaneously.",
 	Callback = function(Value)
-		CONFIG.autoClaimIncubator = Value
+		CONFIG.upgradeAllAtOnce = Value
 	end,
 })
 
-LeftGroupBox:AddDivider()
-
-LeftGroupBox:AddSlider("MaxGenSlider", {
+MainLeftBox:AddSlider("MaxGenSlider", {
 	Text = "Max Feeder Generators",
 	Default = 6,
 	Min = 1,
@@ -478,12 +486,50 @@ LeftGroupBox:AddSlider("MaxGenSlider", {
 	end,
 })
 
-local RightGroupBox = Tabs.Main:AddRightGroupbox("Auto Event")
+local MainRightBox = Tabs.Main:AddRightGroupbox("Tower & Rebirth")
 
-RightGroupBox:AddToggle("AutoTrackMob", {
-	Text = "Golden Goose",
+MainRightBox:AddToggle("MasterAutoFarm", {
+	Text = "Auto Rebirth & Tower",
+	Default = true,
+	Tooltip = "Master switch for automated tower climbs, rebirths, and feeder loops.",
+	Callback = function(Value)
+		if Value then
+			startLoops()
+			Library:Notify("Auto Rebirth & Tower Enabled", 3)
+		else
+			stopAll()
+			Library:Notify("Auto Rebirth & Tower Disabled", 3)
+		end
+	end,
+})
+
+MainRightBox:AddToggle("AutoIncubator", {
+	Text = "Auto Claim Incubator",
+	Default = true,
+	Tooltip = "Automatically claims finished eggs from the incubator.",
+	Callback = function(Value)
+		CONFIG.autoClaimIncubator = Value
+	end,
+})
+
+MainRightBox:AddDivider()
+
+MainRightBox:AddButton({
+	Text = "❌ Kill Script & Destroy UI",
+	Func = function()
+		stopAll()
+		Library:Unload()
+	end,
+	Tooltip = "Halts all automation threads and unloads the UI.",
+})
+
+-- TAB 2: Event Mob Tracking & Hover
+local EventLeftBox = Tabs.Event:AddLeftGroupbox("Golden Goose Tracker")
+
+EventLeftBox:AddToggle("AutoTrackMob", {
+	Text = "Golden Goose Tracker",
 	Default = false,
-	Tooltip = "Continuously follows and hovers directly above active ChickenBody_npc:* targets.",
+	Tooltip = "Continuously follows and hovers directly above active ChickenBody_npc targets.",
 	Callback = function(Value)
 		CONFIG.autoTrackEventMob = Value
 		updateEventTrackingState(Value)
@@ -495,8 +541,8 @@ RightGroupBox:AddToggle("AutoTrackMob", {
 	end,
 })
 
-RightGroupBox:AddSlider("HoverHeightSlider", {
-	Text = "Hover Height Distance",
+EventLeftBox:AddSlider("HoverHeightSlider", {
+	Text = "Hover Distance",
 	Default = 10,
 	Min = 4,
 	Max = 35,
@@ -508,10 +554,10 @@ RightGroupBox:AddSlider("HoverHeightSlider", {
 	end,
 })
 
-RightGroupBox:AddDivider()
+local EventRightBox = Tabs.Event:AddRightGroupbox("Event Teleport")
 
-RightGroupBox:AddButton({
-	Text = "📍 Teleport to Current Event Mob",
+EventRightBox:AddButton({
+	Text = "📍 Teleport to Golden Goose",
 	Func = function()
 		local npc, root = getTargetChickenMob()
 		local char = LocalPlayer.Character
@@ -527,22 +573,13 @@ RightGroupBox:AddButton({
 	Tooltip = "Instantly teleports above the current ChickenBody_npc in workspace.",
 })
 
-RightGroupBox:AddButton({
-	Text = "❌ Kill Script & Destroy UI",
-	Func = function()
-		stopAll()
-		Library:Unload()
-	end,
-	Tooltip = "Halts all automation and unloads the UI.",
-})
-
--- TAB 2: Anti AFK Controls
-local AntiAFKLeftBox = Tabs.AntiAFK:AddLeftGroupbox("Anti-AFK System")
+-- TAB 3: Anti AFK Controls
+local AntiAFKLeftBox = Tabs.AntiAFK:AddLeftGroupbox("AFK Protection")
 
 AntiAFKLeftBox:AddToggle("EnableAntiAFKToggle", {
 	Text = "Enable Anti-AFK",
 	Default = true,
-	Tooltip = "Simulates human walking forward 3 studs & back every 10 minutes to prevent Roblox 20-min AFK disconnects.",
+	Tooltip = "Simulates human walking forward 3 studs & back every 10 minutes to prevent 20-min AFK disconnects.",
 	Callback = function(Value)
 		CONFIG.autoAntiAFK = Value
 		if Value then
@@ -554,7 +591,7 @@ AntiAFKLeftBox:AddToggle("EnableAntiAFKToggle", {
 })
 
 AntiAFKLeftBox:AddSlider("AntiAFKIntervalSlider", {
-	Text = "Anti-AFK Interval (Minutes)",
+	Text = "Walk Interval (Minutes)",
 	Default = 10,
 	Min = 1,
 	Max = 15,
@@ -566,10 +603,10 @@ AntiAFKLeftBox:AddSlider("AntiAFKIntervalSlider", {
 	end,
 })
 
-local AntiAFKRightBox = Tabs.AntiAFK:AddRightGroupbox("Manual Testing")
+local AntiAFKRightBox = Tabs.AntiAFK:AddRightGroupbox("Testing")
 
 AntiAFKRightBox:AddButton({
-	Text = "🚶 Walk Simulation Test",
+	Text = "🚶 Test Walk Simulation",
 	Func = function()
 		pcall(function()
 			local char = LocalPlayer.Character
@@ -590,7 +627,7 @@ AntiAFKRightBox:AddButton({
 	Tooltip = "Triggers the 3-stud walk forward & back test immediately.",
 })
 
--- TAB 3: UI Settings
+-- TAB 4: UI Settings
 local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu Configuration")
 
 MenuGroup:AddToggle("KeybindMenuOpen", {

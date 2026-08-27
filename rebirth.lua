@@ -158,25 +158,104 @@ local function safeInvoke(remoteName, ...)
 end
 
 ---------------------------------------------------------
--- 🔄 REBIRTH UI COLOR CHECK LOGIC
+-- 🔄 REBIRTH READY LOGIC (DIRECT DATA & STEALTH UI)
 ---------------------------------------------------------
-local function getRebirthBar()
+local DataController = nil
+local RebirthBonus = nil
+pcall(function()
+	local playerScripts = LocalPlayer:FindFirstChildOfClass("PlayerScripts") or LocalPlayer:FindFirstChild("PlayerScripts")
+	if playerScripts then
+		local coreData = playerScripts:FindFirstChild("Core", true)
+		if coreData then
+			local dc = coreData:FindFirstChild("DataController", true)
+			if dc then DataController = require(dc) end
+		end
+	end
+	if ReplicatedStorage:FindFirstChild("Core") and ReplicatedStorage.Core:FindFirstChild("Progression") then
+		local rb = ReplicatedStorage.Core.Progression:FindFirstChild("RebirthBonus")
+		if rb then RebirthBonus = require(rb) end
+	end
+end)
+
+local WindowStateModule = nil
+pcall(function()
+	local playerScripts = LocalPlayer:FindFirstChildOfClass("PlayerScripts") or LocalPlayer:FindFirstChild("PlayerScripts")
+	if playerScripts then
+		local uiFolder = playerScripts:FindFirstChild("UI", true)
+		if uiFolder then
+			local hud = uiFolder:FindFirstChild("HUD", true)
+			if hud then
+				local ws = hud:FindFirstChild("WindowState")
+				if ws then WindowStateModule = require(ws) end
+			end
+		end
+	end
+end)
+
+local function hideRebirthGuiStealth(gui)
+	if not gui then return end
+	pcall(function()
+		local frame = gui:FindFirstChild("Frame") or gui:FindFirstChildWhichIsA("Frame", true)
+		if frame then
+			-- Shift UI off-screen so human player never sees it on display
+			frame.Position = UDim2.new(100, 0, 100, 0)
+		end
+	end)
+end
+
+local function isRebirthReadyFromData()
+	if DataController and RebirthBonus then
+		local ok, ready = pcall(function()
+			local reb = DataController.rebirth()
+			local count = if reb then (reb.count or 0) else 0
+			local towerBest = DataController.towerBest() or 0
+			return RebirthBonus.ready(towerBest, count)
+		end)
+		if ok and ready ~= nil then
+			return ready
+		end
+	end
+	return nil
+end
+
+local function openRebirthUI()
+	if WindowStateModule and WindowStateModule.rebirth then
+		pcall(function()
+			WindowStateModule.rebirth(true)
+		end)
+	end
+end
+
+local function getRebirthBar(autoOpenIfMissing)
 	local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:FindFirstChild("PlayerGui")
 	if not playerGui then return nil end
 
-	-- 1. Try direct path provided: PlayerGui:GetChildren()[11].Frame.window.panel.face.content.content.body.reqCard.face.content.bar
+	-- Search 1: Direct ScreenGui named "Rebirth"
+	local rebirthGui = playerGui:FindFirstChild("Rebirth")
+	if rebirthGui then
+		hideRebirthGuiStealth(rebirthGui)
+		local reqCard = rebirthGui:FindFirstChild("reqCard", true)
+		if reqCard then
+			local bar = reqCard:FindFirstChild("bar", true)
+			if bar and bar:IsDescendantOf(playerGui) then return bar end
+		end
+	end
+
+	-- Search 2: Direct path provided
 	local ok, bar = pcall(function()
 		local children = playerGui:GetChildren()
 		if children[11] then
+			hideRebirthGuiStealth(children[11])
 			return children[11].Frame.window.panel.face.content.content.body.reqCard.face.content.bar
 		end
 	end)
-	if ok and bar then return bar end
+	if ok and bar and bar:IsDescendantOf(playerGui) then return bar end
 
-	-- 2. Fallback: Dynamic search across all ScreenGuis in PlayerGui for reqCard -> bar
+	-- Search 3: Dynamic search across all ScreenGuis in PlayerGui
 	for _, gui in ipairs(playerGui:GetChildren()) do
 		local reqCard = gui:FindFirstChild("reqCard", true)
 		if reqCard then
+			hideRebirthGuiStealth(gui)
 			local foundBar = reqCard:FindFirstChild("bar", true)
 			if foundBar then
 				return foundBar
@@ -184,11 +263,33 @@ local function getRebirthBar()
 		end
 	end
 
+	-- Search 4: If UI window is closed and autoOpenIfMissing is true, open in stealth mode!
+	if autoOpenIfMissing and WindowStateModule and WindowStateModule.rebirth then
+		pcall(function() WindowStateModule.rebirth(true) end)
+		task.wait(0.15)
+		local rGui = playerGui:FindFirstChild("Rebirth")
+		if rGui then
+			hideRebirthGuiStealth(rGui)
+			local reqCard = rGui:FindFirstChild("reqCard", true)
+			if reqCard then
+				local foundBar = rGui:FindFirstChild("bar", true)
+				if foundBar then return foundBar end
+			end
+		end
+	end
+
 	return nil
 end
 
-local function isRebirthReadyFromUI()
-	local bar = getRebirthBar()
+local function isRebirthReadyFromUI(autoOpenIfMissing)
+	-- 1. Try Direct Data check first (100% silent & stealth, no UI popups needed!)
+	local dataReady = isRebirthReadyFromData()
+	if dataReady ~= nil then
+		return dataReady
+	end
+
+	-- 2. Fallback to Stealth UI check & bar color check
+	local bar = getRebirthBar(autoOpenIfMissing)
 	if not bar then return nil end
 
 	-- Collect candidate colors from bar and its descendants
@@ -659,7 +760,7 @@ local function startLoops()
 	-- 4. Loop Auto Rebirth
 	task.spawn(function()
 		while CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession do
-			local uiReady = isRebirthReadyFromUI()
+			local uiReady = isRebirthReadyFromUI(true)
 
 			if uiReady == true then
 				-- 1. Stop tower & exit/surrender immediately so player comes down
@@ -869,7 +970,7 @@ task.spawn(function()
 					RebirthStatusLabel.TextLabel.RichText = true
 				end
 
-				local readyState = isRebirthReadyFromUI()
+				local readyState = isRebirthReadyFromUI(true)
 				if readyState == true then
 					RebirthStatusLabel:SetText('Status: <font color="#00FF7F"><b>🟢 READY TO REBIRTH</b></font>')
 				elseif readyState == false then

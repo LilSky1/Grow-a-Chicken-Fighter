@@ -41,10 +41,6 @@ local CONFIG = {
 	cooldownBeforeTower = 6,
 	cooldownAfterRebirth = 8,
 
-	-- Event / Mob Tracking Configuration
-	autoTrackEventMob = false,
-	hoverHeight = 10,           -- Distance above NPC head
-
 	-- Anti-AFK Configuration
 	autoAntiAFK = true,
 	antiAFKInterval = 600,     -- 10 Minutes (600s)
@@ -53,7 +49,6 @@ local CONFIG = {
 local sessionId = 0
 local isLoopRunning = false
 local currentGeneratorTarget = 1
-local eventTrackingConnection = nil
 
 ---------------------------------------------------------
 -- 🛡️ SAFE ANTI-AFK (Human-like Walk Simulation Every 10 Mins)
@@ -61,6 +56,7 @@ local eventTrackingConnection = nil
 task.spawn(function()
 	while true do
 		task.wait(CONFIG.antiAFKInterval or 600)
+		if _G.__AutoFarmRebirthStop then break end
 		if CONFIG.autoAntiAFK then
 			pcall(function()
 				local char = LocalPlayer.Character
@@ -125,7 +121,7 @@ local okReq, CoreRemotes = pcall(function()
 end)
 
 local function safeInvoke(remoteName, ...)
-	if not CONFIG.enabled or _G.__AutoFarmRebirthStop then return false end
+	if _G.__AutoFarmRebirthStop then return false end
 	
 	local remote = validRemotes[remoteName] or (RemotesFolder and RemotesFolder:FindFirstChild(remoteName))
 	if remote then
@@ -282,68 +278,12 @@ local function tryRebirth()
 	return false, tostring(result)
 end
 
----------------------------------------------------------
--- 🐔 DYNAMIC EVENT MOB SEARCH & TRACKING LOGIC
----------------------------------------------------------
-local function getTargetChickenMob()
-	local folder = workspace:FindFirstChild("ChickenBodies")
-	if folder then
-		for _, npc in ipairs(folder:GetChildren()) do
-			-- Finds any NPC starting with "ChickenBody_npc" regardless of the trailing ID number
-			if npc.Name:find("ChickenBody_npc") then
-				local root = npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChild("Head") or npc:FindFirstChildWhichIsA("BasePart")
-				if root then
-					return npc, root
-				end
-			end
-		end
-	end
-	return nil, nil
-end
-
-local function updateEventTrackingState(enable)
-	if eventTrackingConnection then
-		eventTrackingConnection:Disconnect()
-		eventTrackingConnection = nil
-	end
-
-	if not enable then return end
-
-	eventTrackingConnection = RunService.Heartbeat:Connect(function()
-		if not CONFIG.autoTrackEventMob or not CONFIG.enabled or _G.__AutoFarmRebirthStop then
-			if eventTrackingConnection then
-				eventTrackingConnection:Disconnect()
-				eventTrackingConnection = nil
-			end
-			return
-		end
-
-		local char = LocalPlayer.Character
-		local hrp = char and char:FindFirstChild("HumanoidRootPart")
-		local hum = char and char:FindFirstChildOfClass("Humanoid")
-
-		if hrp and hum and hum.Health > 0 then
-			local _, targetRoot = getTargetChickenMob()
-			if targetRoot then
-				-- Hover smoothly above target NPC
-				hrp.CFrame = CFrame.new(targetRoot.Position + Vector3.new(0, CONFIG.hoverHeight, 0))
-				hrp.AssemblyLinearVelocity = Vector3.zero
-			end
-		end
-	end)
-end
-
 local function stopAll()
 	CONFIG.enabled = false
 	_G.__AutoFarmRebirthStop = true
 	_G.__AutoFarmRebirthRunning = false
 	isLoopRunning = false
 	sessionId = sessionId + 1
-
-	if eventTrackingConnection then
-		eventTrackingConnection:Disconnect()
-		eventTrackingConnection = nil
-	end
 end
 
 local function startLoops()
@@ -356,10 +296,6 @@ local function startLoops()
 	
 	sessionId = sessionId + 1
 	local currentSession = sessionId
-
-	if CONFIG.autoTrackEventMob then
-		updateEventTrackingState(true)
-	end
 
 	task.spawn(function()
 		tryBuyAndUpgradeGenerators()
@@ -447,12 +383,11 @@ local Window = Library:CreateWindow({
 
 local Tabs = {
 	Main = Window:AddTab("Auto Farm", "user"),
-	Event = Window:AddTab("Event", "sparkles"),
 	AntiAFK = Window:AddTab("Anti AFK", "shield"),
 	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
 }
 
--- TAB 1: Main Automation Controls
+-- TAB 1: Main Automation & Event Controls
 local MainLeftBox = Tabs.Main:AddLeftGroupbox("Feeder Automation")
 
 MainLeftBox:AddToggle("AutoFeeder", {
@@ -521,56 +456,6 @@ MainRightBox:AddButton({
 		Library:Unload()
 	end,
 	Tooltip = "Halts all automation threads and unloads the UI.",
-})
-
--- TAB 2: Event Mob Tracking & Hover
-local EventLeftBox = Tabs.Event:AddLeftGroupbox("Golden Goose Tracker")
-
-EventLeftBox:AddToggle("AutoTrackMob", {
-	Text = "Golden Goose Tracker",
-	Default = false,
-	Tooltip = "Continuously follows and hovers directly above active ChickenBody_npc targets.",
-	Callback = function(Value)
-		CONFIG.autoTrackEventMob = Value
-		updateEventTrackingState(Value)
-		if Value then
-			Library:Notify("Event Mob Tracking: Active", 2)
-		else
-			Library:Notify("Event Mob Tracking: Stopped", 2)
-		end
-	end,
-})
-
-EventLeftBox:AddSlider("HoverHeightSlider", {
-	Text = "Hover Distance",
-	Default = 10,
-	Min = 4,
-	Max = 35,
-	Rounding = 0,
-	Compact = false,
-	Tooltip = "Adjust vertical offset above the mob.",
-	Callback = function(Value)
-		CONFIG.hoverHeight = math.floor(Value)
-	end,
-})
-
-local EventRightBox = Tabs.Event:AddRightGroupbox("Event Teleport")
-
-EventRightBox:AddButton({
-	Text = "📍 Teleport to Golden Goose",
-	Func = function()
-		local npc, root = getTargetChickenMob()
-		local char = LocalPlayer.Character
-		local hrp = char and char:FindFirstChild("HumanoidRootPart")
-
-		if root and hrp then
-			hrp.CFrame = CFrame.new(root.Position + Vector3.new(0, CONFIG.hoverHeight, 0))
-			Library:Notify("Teleported to " .. npc.Name, 3)
-		else
-			Library:Notify("No active ChickenBody NPC found in Workspace", 3)
-		end
-	end,
-	Tooltip = "Instantly teleports above the current ChickenBody_npc in workspace.",
 })
 
 -- TAB 3: Anti AFK Controls

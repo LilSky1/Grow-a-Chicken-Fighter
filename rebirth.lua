@@ -31,6 +31,7 @@ local Toggles = Library.Toggles
 local CONFIG = {
 	enabled = true,
 	autoUpgrade = true,
+	autoTowerAndRebirth = true,
 	upgradeAllAtOnce = false,   -- false: Sequential 1-by-1 | true: Upgrade All Simultaneously
 	autoClaimIncubator = true,
 	maxGenerators = 6,          -- Configurable from 1 to 6
@@ -46,7 +47,7 @@ local CONFIG = {
 	antiAFKInterval = 600,     -- 10 Minutes (600s)
 
 	-- Nest Egg Collection Configuration
-	autoCollectNestEggs = true,
+	autoCollectNestEggs = true,	
 	nestEggCheckInterval = 3,  -- Every 3 seconds
 
 	-- Golden Goose Tracker Configuration
@@ -54,6 +55,10 @@ local CONFIG = {
 	autoAttackGoldenGoose = false,
 	goldenGooseHoverHeight = 6,
 	goldenGooseTeleportInterval = 3, -- Teleport once every 3 seconds (Anti-Kick)
+
+	-- Arena Fight Configuration
+	autoArenaFight = false,
+	arenaFightInterval = 5,    -- Every 5 seconds
 }
 
 local sessionId = 0
@@ -177,6 +182,38 @@ pcall(function()
 	end
 end)
 
+---------------------------------------------------------
+-- 📡 REAL-TIME DATASERVICE PACKET LISTENER
+---------------------------------------------------------
+local cachedServerData = {
+	coop = nil,
+	rebirth = nil,
+	tower = nil,
+	lastUpdate = 0
+}
+
+pcall(function()
+	local packages = ReplicatedStorage:FindFirstChild("Packages", true)
+	if packages then
+		local remotes = packages:FindFirstChild("_remotes", true)
+		if remotes then
+			local ds = remotes:FindFirstChild("DataService", true)
+			if ds then
+				local remoteEvent = ds:FindFirstChild("RemoteEvent")
+				if remoteEvent then
+					remoteEvent.OnClientEvent:Connect(function(actionType, path, data)
+						if type(path) == "table" and #path > 0 then
+							local category = tostring(path[1]):lower()
+							cachedServerData[category] = data
+							cachedServerData.lastUpdate = tick()
+						end
+					end)
+				end
+			end
+		end
+	end
+end)
+
 local WindowStateModule = nil
 pcall(function()
 	local playerScripts = LocalPlayer:FindFirstChildOfClass("PlayerScripts") or LocalPlayer:FindFirstChild("PlayerScripts")
@@ -204,6 +241,34 @@ local function hideRebirthGuiStealth(gui)
 end
 
 local function isRebirthReadyFromData()
+	if RebirthBonus then
+		-- 1. Try reading from cached real-time server packets first
+		local okCache, readyCache = pcall(function()
+			local rebCount = 0
+			if cachedServerData.rebirth and type(cachedServerData.rebirth) == "table" then
+				rebCount = cachedServerData.rebirth.count or 0
+			elseif DataController then
+				local reb = DataController.rebirth()
+				rebCount = if reb then (reb.count or 0) else 0
+			end
+
+			local towerBest = 0
+			if cachedServerData.tower and type(cachedServerData.tower) == "table" then
+				towerBest = cachedServerData.tower.best or cachedServerData.tower.maxFloor or 0
+			elseif DataController then
+				towerBest = DataController.towerBest() or 0
+			end
+
+			if towerBest > 0 then
+				return RebirthBonus.ready(towerBest, rebCount)
+			end
+		end)
+		if okCache and readyCache ~= nil then
+			return readyCache
+		end
+	end
+
+	-- 2. Fallback to DataController directly
 	if DataController and RebirthBonus then
 		local ok, ready = pcall(function()
 			local reb = DataController.rebirth()
@@ -329,53 +394,104 @@ local function isRebirthReadyFromUI(autoOpenIfMissing)
 	return nil
 end
 
+---------------------------------------------------------
+-- ⚙️ GENERATOR MAX & PURCHASE STATE TRACKING
+---------------------------------------------------------
+local maxedGenerators = {}
+local boughtGenerators = {}
+local expandedCoopTier = {}
+
+local function resetGeneratorStates()
+	maxedGenerators = {}
+	boughtGenerators = {}
+	expandedCoopTier = {}
+	currentGeneratorTarget = 1
+end
+
+local function isAllGeneratorsMaxed()
+	for i = 1, CONFIG.maxGenerators do
+		if not maxedGenerators[i] then
+			return false
+		end
+	end
+	return true
+end
+
 -- Progressive Generator Upgrade & Step-by-Step Coop Expansion
 local function tryBuyAndUpgradeGenerators()
 	if not CONFIG.enabled or _G.__AutoFarmRebirthStop then return end
 	if isRebirthReadyFromUI() == true then return end
 
+	-- 0. If all target generators (1 to maxGenerators) are maxed out, STOP firing remotes completely!
+	if isAllGeneratorsMaxed() then
+		return
+	end
+
 	if CONFIG.upgradeAllAtOnce then
 		-- Mode: Upgrade All Generators Simultaneously (Round-Robin)
 		for i = 1, CONFIG.maxGenerators do
 			if not CONFIG.enabled or _G.__AutoFarmRebirthStop then break end
+			if isRebirthReadyFromUI() == true then break end
 
-			if i >= 3 then
-				safeInvoke("ExpandCoop")
+			if not maxedGenerators[i] then
+				if i >= 3 and not expandedCoopTier[i] then
+					safeInvoke("ExpandCoop")
+					expandedCoopTier[i] = true
+				end
+
+				if not boughtGenerators[i] then
+					if validRemotes["BuyGenerator"] then
+						safeInvoke("BuyGenerator", i)
+					elseif validRemotes["PurchaseGenerator"] then
+						safeInvoke("PurchaseGenerator", i)
+					else
+						safeInvoke("BuyGenerator", i)
+					end
+					boughtGenerators[i] = true
+				end
+
+				local ok, res = safeInvoke("UpgradeGenerator", i)
+				if ok and type(res) == "table" and res.error then
+					local err = tostring(res.error):lower()
+					if (string.find(err, "max") or string.find(err, "full")) and not string.find(err, "coop") and not string.find(err, "money") and not string.find(err, "cash") and not string.find(err, "afford") then
+						maxedGenerators[i] = true
+					end
+				end
+				task.wait(0.02)
 			end
-
-			if validRemotes["BuyGenerator"] then
-				safeInvoke("BuyGenerator", i)
-			elseif validRemotes["PurchaseGenerator"] then
-				safeInvoke("PurchaseGenerator", i)
-			else
-				safeInvoke("BuyGenerator", i)
-			end
-
-			safeInvoke("UpgradeGenerator", i)
-			task.wait(0.02)
 		end
 	else
 		-- Mode: Sequential Upgrade (1-by-1 to Max Level)
+		while currentGeneratorTarget <= CONFIG.maxGenerators and maxedGenerators[currentGeneratorTarget] do
+			currentGeneratorTarget = currentGeneratorTarget + 1
+		end
+
 		if currentGeneratorTarget > CONFIG.maxGenerators then
-			currentGeneratorTarget = CONFIG.maxGenerators
+			return -- All generators up to maxGenerators are maxed!
 		end
 
-		-- 1. If target is generator 3 or higher, expand coop first
-		if currentGeneratorTarget >= 3 then
+		-- 1. If target is generator 3 or higher, expand coop once per tier
+		if currentGeneratorTarget >= 3 and not expandedCoopTier[currentGeneratorTarget] then
 			safeInvoke("ExpandCoop")
+			expandedCoopTier[currentGeneratorTarget] = true
 		end
 
-		-- 2. Unlock / Buy current generator slot
-		if validRemotes["BuyGenerator"] then
-			safeInvoke("BuyGenerator", currentGeneratorTarget)
-		elseif validRemotes["PurchaseGenerator"] then
-			safeInvoke("PurchaseGenerator", currentGeneratorTarget)
-		else
-			safeInvoke("BuyGenerator", currentGeneratorTarget)
+		-- 2. Unlock / Buy current generator slot once
+		if not boughtGenerators[currentGeneratorTarget] then
+			if validRemotes["BuyGenerator"] then
+				safeInvoke("BuyGenerator", currentGeneratorTarget)
+			elseif validRemotes["PurchaseGenerator"] then
+				safeInvoke("PurchaseGenerator", currentGeneratorTarget)
+			else
+				safeInvoke("BuyGenerator", currentGeneratorTarget)
+			end
+			boughtGenerators[currentGeneratorTarget] = true
 		end
 
 		-- 3. Turbo Upgrade current target generator
 		for _ = 1, 3 do
+			if isRebirthReadyFromUI() == true then break end
+
 			local ok, res = safeInvoke("UpgradeGenerator", currentGeneratorTarget)
 
 			local isMax = false
@@ -387,10 +503,12 @@ local function tryBuyAndUpgradeGenerators()
 			end
 
 			if isMax then
+				maxedGenerators[currentGeneratorTarget] = true
 				if currentGeneratorTarget < CONFIG.maxGenerators then
 					currentGeneratorTarget = currentGeneratorTarget + 1
-					if currentGeneratorTarget >= 3 then
+					if currentGeneratorTarget >= 3 and not expandedCoopTier[currentGeneratorTarget] then
 						safeInvoke("ExpandCoop")
+						expandedCoopTier[currentGeneratorTarget] = true
 					end
 				end
 				break
@@ -527,6 +645,14 @@ local function tryCollectNestEggs()
 			end
 		end
 	end
+end
+
+---------------------------------------------------------
+-- ⚔️ AUTOMATED ARENA FIGHT LOGIC
+---------------------------------------------------------
+local function tryArenaFight()
+	if not CONFIG.autoArenaFight or _G.__AutoFarmRebirthStop then return end
+	safeInvoke("ArenaFight")
 end
 
 ---------------------------------------------------------
@@ -723,7 +849,12 @@ local function startLoops()
 		if CONFIG.autoClaimIncubator then
 			safeInvoke("IncubatorClaim")
 		end
-		startTower(false, currentSession)
+		if CONFIG.autoTowerAndRebirth then
+			startTower(false, currentSession)
+		end
+		if CONFIG.autoArenaFight then
+			tryArenaFight()
+		end
 	end)
 
 	-- 1. Loop Auto Buy/Upgrade Feeder
@@ -741,7 +872,7 @@ local function startLoops()
 	task.spawn(function()
 		while CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession do
 			if not smartWait(CONFIG.towerRestartInterval, currentSession) then break end
-			if CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession then
+			if CONFIG.enabled and CONFIG.autoTowerAndRebirth and not _G.__AutoFarmRebirthStop and sessionId == currentSession then
 				startTower(true, currentSession)
 			end
 		end
@@ -760,53 +891,31 @@ local function startLoops()
 	-- 4. Loop Auto Rebirth
 	task.spawn(function()
 		while CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession do
-			local uiReady = isRebirthReadyFromUI(true)
+			if CONFIG.autoTowerAndRebirth then
+				local uiReady = isRebirthReadyFromUI(true)
 
-			if uiReady == true then
-				-- 1. Stop tower & exit/surrender immediately so player comes down
-				safeInvoke("TowerSurrender")
-				task.wait(0.5)
+				if uiReady == true then
+					-- 1. Stop tower & exit/surrender immediately so player comes down
+					safeInvoke("TowerSurrender")
+					task.wait(0.5)
 
-				-- 2. Once down, stop doing everything else and spam Rebirth until bar color turns to 0, 57, 89
-				while CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession do
-					local currentState = isRebirthReadyFromUI()
-					if currentState == false then
-						-- Bar turned into 0, 57, 89 (Not ready) -> Rebirth success!
-						break
+					-- 2. Once down, stop doing everything else and spam Rebirth until bar color turns to 0, 57, 89
+					while CONFIG.enabled and CONFIG.autoTowerAndRebirth and not _G.__AutoFarmRebirthStop and sessionId == currentSession do
+						local currentState = isRebirthReadyFromUI()
+						if currentState == false then
+							-- Bar turned into 0, 57, 89 (Not ready) -> Rebirth success!
+							break
+						end
+
+						-- Fire Rebirth remotes repeatedly
+						safeInvoke("Rebirth")
+						if okReq and CoreRemotes and CoreRemotes.defs and CoreRemotes.defs.Rebirth then
+							pcall(function() CoreRemotes.invoke(CoreRemotes.defs.Rebirth) end)
+						end
+						task.wait(0.2)
 					end
 
-					-- Fire Rebirth remotes repeatedly
-					safeInvoke("Rebirth")
-					if okReq and CoreRemotes and CoreRemotes.defs and CoreRemotes.defs.Rebirth then
-						pcall(function() CoreRemotes.invoke(CoreRemotes.defs.Rebirth) end)
-					end
-					task.wait(0.2)
-				end
-
-				-- 3. Post-Rebirth milestone claim & restart sequence
-				safeInvoke("TowerSurrender")
-
-				if okReq and CoreRemotes and CoreRemotes.defs and (CoreRemotes.defs.ClaimRebirthMilestones or CoreRemotes.defs.ClaimRebirthMilestone) then
-					local def = CoreRemotes.defs.ClaimRebirthMilestones or CoreRemotes.defs.ClaimRebirthMilestone
-					pcall(function() CoreRemotes.invoke(def) end)
-				else
-					safeInvoke("ClaimRebirthMilestones")
-				end
-
-				currentGeneratorTarget = 1
-
-				task.wait(1.0)
-				tryBuyAndUpgradeGenerators()
-
-				if not smartWait(CONFIG.cooldownAfterRebirth, currentSession) then break end
-
-				if CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession then
-					startTower(false, currentSession)
-				end
-			else
-				local ok, _ = tryRebirth()
-
-				if ok then
+					-- 3. Post-Rebirth milestone claim & restart sequence
 					safeInvoke("TowerSurrender")
 
 					if okReq and CoreRemotes and CoreRemotes.defs and (CoreRemotes.defs.ClaimRebirthMilestones or CoreRemotes.defs.ClaimRebirthMilestone) then
@@ -816,15 +925,39 @@ local function startLoops()
 						safeInvoke("ClaimRebirthMilestones")
 					end
 
-					currentGeneratorTarget = 1
+					resetGeneratorStates()
 
 					task.wait(1.0)
 					tryBuyAndUpgradeGenerators()
 
 					if not smartWait(CONFIG.cooldownAfterRebirth, currentSession) then break end
 
-					if CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession then
+					if CONFIG.enabled and CONFIG.autoTowerAndRebirth and not _G.__AutoFarmRebirthStop and sessionId == currentSession then
 						startTower(false, currentSession)
+					end
+				else
+					local ok, _ = tryRebirth()
+
+					if ok then
+						safeInvoke("TowerSurrender")
+
+						if okReq and CoreRemotes and CoreRemotes.defs and (CoreRemotes.defs.ClaimRebirthMilestones or CoreRemotes.defs.ClaimRebirthMilestone) then
+							local def = CoreRemotes.defs.ClaimRebirthMilestones or CoreRemotes.defs.ClaimRebirthMilestone
+							pcall(function() CoreRemotes.invoke(def) end)
+						else
+							safeInvoke("ClaimRebirthMilestones")
+						end
+
+						resetGeneratorStates()
+
+						task.wait(1.0)
+						tryBuyAndUpgradeGenerators()
+
+						if not smartWait(CONFIG.cooldownAfterRebirth, currentSession) then break end
+
+						if CONFIG.enabled and CONFIG.autoTowerAndRebirth and not _G.__AutoFarmRebirthStop and sessionId == currentSession then
+							startTower(false, currentSession)
+						end
 					end
 				end
 			end
@@ -844,6 +977,16 @@ local function startLoops()
 				tryCollectNestEggs()
 			end
 			if not smartWait(CONFIG.nestEggCheckInterval or 3, currentSession) then break end
+		end
+	end)
+
+	-- 6. Loop Auto Arena Fight
+	task.spawn(function()
+		while CONFIG.enabled and not _G.__AutoFarmRebirthStop and sessionId == currentSession do
+			if CONFIG.autoArenaFight then
+				tryArenaFight()
+			end
+			if not smartWait(CONFIG.arenaFightInterval or 5, currentSession) then break end
 		end
 	end)
 end
@@ -945,13 +1088,13 @@ local MainRightBox = Tabs.Main:AddRightGroupbox("Tower & Rebirth")
 MainRightBox:AddToggle("MasterAutoFarm", {
 	Text = "Auto Rebirth & Tower",
 	Default = true,
-	Tooltip = "Master switch for automated tower climbs, rebirths, and feeder loops.",
+	Tooltip = "Automates tower climbs and rebirths.",
 	Callback = function(Value)
+		CONFIG.autoTowerAndRebirth = Value
 		if Value then
-			startLoops()
+			if not isLoopRunning then startLoops() end
 			Library:Notify("Auto Rebirth & Tower Enabled", 3)
 		else
-			stopAll()
 			Library:Notify("Auto Rebirth & Tower Disabled", 3)
 		end
 	end,
@@ -1048,6 +1191,50 @@ task.spawn(function()
 		end)
 	end
 end)
+
+local ArenaBox = Tabs.Event:AddLeftGroupbox("Arena Fight Automation")
+
+ArenaBox:AddToggle("AutoArenaFight", {
+	Text = "Auto Arena Fight",
+	Default = false,
+	Tooltip = "Automatically invokes ArenaFight remote periodically to enter Arena battles.",
+	Callback = function(Value)
+		CONFIG.autoArenaFight = Value
+		if Value then
+			Library:Notify("Auto Arena Fight: Enabled", 2)
+		else
+			Library:Notify("Auto Arena Fight: Disabled", 2)
+		end
+	end,
+})
+
+ArenaBox:AddSlider("ArenaIntervalSlider", {
+	Text = "Arena Check Cooldown (s)",
+	Default = 5,
+	Min = 1,
+	Max = 60,
+	Rounding = 0,
+	Compact = false,
+	Tooltip = "Frequency (in seconds) to trigger Arena Fight.",
+	Callback = function(Value)
+		CONFIG.arenaFightInterval = math.floor(Value)
+	end,
+})
+
+ArenaBox:AddDivider()
+
+ArenaBox:AddButton({
+	Text = "⚔️ Enter Arena Fight Now",
+	Func = function()
+		local ok, res = safeInvoke("ArenaFight")
+		if ok then
+			Library:Notify("Invoked Arena Fight Remote", 2)
+		else
+			Library:Notify("Failed to invoke Arena Fight Remote", 2)
+		end
+	end,
+	Tooltip = "Triggers the ArenaFight remote immediately.",
+})
 
 local EventRightBox = Tabs.Event:AddRightGroupbox("Golden Goose Tracker & Attack")
 

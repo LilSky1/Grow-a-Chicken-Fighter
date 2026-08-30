@@ -32,7 +32,7 @@ local CONFIG = {
 	enabled = true,
 	autoUpgrade = true,
 	autoTowerAndRebirth = true,
-	upgradeAllAtOnce = false,   -- false: Sequential 1-by-1 | true: Upgrade All Simultaneously
+	upgradeAllAtOnce = true,   -- false: Sequential 1-by-1 | true: Upgrade All Simultaneously
 	autoClaimIncubator = true,
 	maxGenerators = 6,          -- Configurable from 1 to 6
 	upgradeInterval = 0.10,     -- Turbo Delay (0.10s)
@@ -417,7 +417,7 @@ local function isAllGeneratorsMaxed()
 	return true
 end
 
--- Progressive Generator Upgrade & Step-by-Step Coop Expansion
+-- Progressive Generator Upgrade & Step-by-Step Coop Expansion (Support for 6 Machines)
 local function tryBuyAndUpgradeGenerators()
 	if not CONFIG.enabled or _G.__AutoFarmRebirthStop then return end
 	if isRebirthReadyFromUI() == true then return end
@@ -428,7 +428,7 @@ local function tryBuyAndUpgradeGenerators()
 	end
 
 	if CONFIG.upgradeAllAtOnce then
-		-- Mode: Upgrade All Generators Simultaneously (Round-Robin)
+		-- Mode: Upgrade All Generators Simultaneously (Round-Robin for machines 1..maxGenerators)
 		for i = 1, CONFIG.maxGenerators do
 			if not CONFIG.enabled or _G.__AutoFarmRebirthStop then break end
 			if isRebirthReadyFromUI() == true then break end
@@ -439,18 +439,14 @@ local function tryBuyAndUpgradeGenerators()
 					expandedCoopTier[i] = true
 				end
 
-				if not boughtGenerators[i] then
-					if validRemotes["BuyGenerator"] then
-						safeInvoke("BuyGenerator", i)
-					elseif validRemotes["PurchaseGenerator"] then
-						safeInvoke("PurchaseGenerator", i)
-					else
-						safeInvoke("BuyGenerator", i)
-					end
-					boughtGenerators[i] = true
-				end
+				-- Fire BuyGenerator and UpgradeGenerator remotes with machine index (1 to 6)
+				local okBuy, resBuy = safeInvoke("BuyGenerator", i)
+				local okUpg, resUpg = safeInvoke("UpgradeGenerator", i)
 
-				local ok, res = safeInvoke("UpgradeGenerator", i)
+				local ok = okBuy or okUpg
+				local res = resBuy or resUpg
+				boughtGenerators[i] = true
+
 				if ok and type(res) == "table" and res.error then
 					local err = tostring(res.error):lower()
 					if (string.find(err, "max") or string.find(err, "full")) and not string.find(err, "coop") and not string.find(err, "money") and not string.find(err, "cash") and not string.find(err, "afford") then
@@ -461,7 +457,7 @@ local function tryBuyAndUpgradeGenerators()
 			end
 		end
 	else
-		-- Mode: Sequential Upgrade (1-by-1 to Max Level)
+		-- Mode: Sequential Upgrade (1-by-1 to Max Level for machines 1..maxGenerators)
 		while currentGeneratorTarget <= CONFIG.maxGenerators and maxedGenerators[currentGeneratorTarget] do
 			currentGeneratorTarget = currentGeneratorTarget + 1
 		end
@@ -476,23 +472,17 @@ local function tryBuyAndUpgradeGenerators()
 			expandedCoopTier[currentGeneratorTarget] = true
 		end
 
-		-- 2. Unlock / Buy current generator slot once
-		if not boughtGenerators[currentGeneratorTarget] then
-			if validRemotes["BuyGenerator"] then
-				safeInvoke("BuyGenerator", currentGeneratorTarget)
-			elseif validRemotes["PurchaseGenerator"] then
-				safeInvoke("PurchaseGenerator", currentGeneratorTarget)
-			else
-				safeInvoke("BuyGenerator", currentGeneratorTarget)
-			end
-			boughtGenerators[currentGeneratorTarget] = true
-		end
-
-		-- 3. Turbo Upgrade current target generator
+		-- 2. Turbo Buy & Upgrade current target generator (1 to 6)
 		for _ = 1, 3 do
 			if isRebirthReadyFromUI() == true then break end
 
-			local ok, res = safeInvoke("UpgradeGenerator", currentGeneratorTarget)
+			-- Fire BuyGenerator (game's updated remote) and UpgradeGenerator for current generator slot
+			local okBuy, resBuy = safeInvoke("BuyGenerator", currentGeneratorTarget)
+			local okUpg, resUpg = safeInvoke("UpgradeGenerator", currentGeneratorTarget)
+
+			local ok = okBuy or okUpg
+			local res = resBuy or resUpg
+			boughtGenerators[currentGeneratorTarget] = true
 
 			local isMax = false
 			if ok and type(res) == "table" and res.error then

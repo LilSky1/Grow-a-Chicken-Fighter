@@ -434,9 +434,9 @@ local function tryBuyAndUpgradeGenerators()
 			if isRebirthReadyFromUI() == true then break end
 
 			if not maxedGenerators[i] then
-				if i >= 3 and not expandedCoopTier[i] then
+				-- Auto-expand coop for generator slot 3 and above
+				if i >= 3 then
 					safeInvoke("ExpandCoop")
-					expandedCoopTier[i] = true
 				end
 
 				-- Fire BuyGenerator and UpgradeGenerator remotes with machine index (1 to 6)
@@ -449,7 +449,10 @@ local function tryBuyAndUpgradeGenerators()
 
 				if ok and type(res) == "table" and res.error then
 					local err = tostring(res.error):lower()
-					if (string.find(err, "max") or string.find(err, "full")) and not string.find(err, "coop") and not string.find(err, "money") and not string.find(err, "cash") and not string.find(err, "afford") then
+					if string.find(err, "coop") then
+						-- Server requires coop expansion: invoke ExpandCoop immediately
+						safeInvoke("ExpandCoop")
+					elseif (string.find(err, "max") or string.find(err, "full")) and not string.find(err, "money") and not string.find(err, "cash") and not string.find(err, "afford") then
 						maxedGenerators[i] = true
 					end
 				end
@@ -466,10 +469,9 @@ local function tryBuyAndUpgradeGenerators()
 			return -- All generators up to maxGenerators are maxed!
 		end
 
-		-- 1. If target is generator 3 or higher, expand coop once per tier
-		if currentGeneratorTarget >= 3 and not expandedCoopTier[currentGeneratorTarget] then
+		-- 1. If target is generator 3 or higher, attempt coop expansion
+		if currentGeneratorTarget >= 3 then
 			safeInvoke("ExpandCoop")
-			expandedCoopTier[currentGeneratorTarget] = true
 		end
 
 		-- 2. Turbo Buy & Upgrade current target generator (1 to 6)
@@ -487,7 +489,10 @@ local function tryBuyAndUpgradeGenerators()
 			local isMax = false
 			if ok and type(res) == "table" and res.error then
 				local err = tostring(res.error):lower()
-				if (string.find(err, "max") or string.find(err, "full")) and not string.find(err, "coop") and not string.find(err, "money") and not string.find(err, "cash") and not string.find(err, "afford") then
+				if string.find(err, "coop") then
+					-- Server requires coop expansion: invoke ExpandCoop immediately
+					safeInvoke("ExpandCoop")
+				elseif (string.find(err, "max") or string.find(err, "full")) and not string.find(err, "money") and not string.find(err, "cash") and not string.find(err, "afford") then
 					isMax = true
 				end
 			end
@@ -496,9 +501,8 @@ local function tryBuyAndUpgradeGenerators()
 				maxedGenerators[currentGeneratorTarget] = true
 				if currentGeneratorTarget < CONFIG.maxGenerators then
 					currentGeneratorTarget = currentGeneratorTarget + 1
-					if currentGeneratorTarget >= 3 and not expandedCoopTier[currentGeneratorTarget] then
+					if currentGeneratorTarget >= 3 then
 						safeInvoke("ExpandCoop")
-						expandedCoopTier[currentGeneratorTarget] = true
 					end
 				end
 				break
